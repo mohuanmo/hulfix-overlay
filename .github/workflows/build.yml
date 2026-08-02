@@ -44,9 +44,9 @@ jobs:
     - name: Build Debug APK
       run: |
         for i in 1 2 3; do
-          gradle assembleDebug --no-daemon --stacktrace && break
-          echo "Build attempt $i failed, retrying in 30s..."
-          sleep 30
+          gradle assembleDebug --no-daemon --init-script init.gradle --stacktrace && break
+          echo "Build attempt $i failed, retrying in 60s..."
+          sleep 60
         done
 
     - name: Delete old release
