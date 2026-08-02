@@ -5,7 +5,6 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,20 +28,19 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
     private static final long AUTO_DISMISS_MS = 5000;
 
-    /* ===== UI 开关 ===== */
-    private static final boolean USE_FROSTED_GLASS = true;
-
-    /* ===== 窗口位置 ===== */
+    /* ===== 新增：窗口固定位置（基于用户设备像素坐标） ===== */
+    // 左上(1386,77)  右上(2059,77)
+    // 左下(1386,196) 右下(2057,196)
     private static final int WIN_X = 1386;
     private static final int WIN_Y = 77;
-    private static final int WIN_W = 673;
-    private static final int WIN_H = 119;
+    private static final int WIN_W = 673;   // 2059 - 1386
+    private static final int WIN_H = 119;   // 196 - 77
 
     private Context mContext;
     private WindowManager mWindowManager;
     private Handler mHandler;
 
-    // 单实例：只保留最新一条
+    /* ===== 修改：单实例，只保留最新一条通知 ===== */
     private String mCurrentKey = null;
     private View mCurrentOverlay = null;
     private Runnable mCurrentDismissRunnable = null;
@@ -51,15 +49,15 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v6 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v7 loaded ======");
 
-        // 【保持 v3 结构】Handler 在 handleLoadPackage 里初始化
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
         }
 
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
+        hookNotificationEntry(lpparam);
     }
 
     private void hookHeadsUpIsVisible(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -81,10 +79,9 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (sbn == null) return;
 
                             String key = sbn.getKey();
-                            param.setResult(null);
-                            if (key.equals(mCurrentKey)) return;
+                            XposedBridge.log(TAG + ": HeadsUpIsVisible triggered, key=" + key);
 
-                            XposedBridge.log(TAG + ": New HeadsUp: " + key);
+                            param.setResult(null);
 
                             if (mContext == null) {
                                 mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
@@ -94,7 +91,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpIsVisible error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpIsVisible hook error: " + t);
                         }
                     }
                 }
@@ -127,9 +124,11 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (sbn == null) return;
 
                             String key = sbn.getKey();
+                            /* ===== 修改：单实例去重 ===== */
                             if (key.equals(mCurrentKey)) return;
 
-                            XposedBridge.log(TAG + ": AnimatingAway fallback: " + key);
+                            XposedBridge.log(TAG + ": AnimatingAway(false) + landscape, key=" + key);
+
                             param.setResult(null);
 
                             if (mContext == null) {
@@ -140,7 +139,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook error: " + t);
                         }
                     }
                 }
@@ -148,6 +147,18 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook failed: " + t);
+        }
+    }
+
+    private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> entryClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.collection.NotificationEntry",
+                lpparam.classLoader
+            );
+            XposedBridge.log(TAG + ": Found NotificationEntry class");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": NotificationEntry not found");
         }
     }
 
@@ -187,7 +198,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
-                // 新通知替换旧的
+                /* ===== 修改：单实例，新通知替换旧通知 ===== */
                 removeCurrentOverlayInternal();
 
                 Notification notification = sbn.getNotification();
@@ -196,68 +207,42 @@ public class MainHook implements IXposedHookLoadPackage {
                 String title = extras.getString(Notification.EXTRA_TITLE, "");
                 CharSequence text = extras.getCharSequence(Notification.EXTRA_TEXT, "");
                 CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "");
-                String content = (bigText != null && bigText.length() > 0)
-                    ? bigText.toString()
-                    : (text != null ? text.toString() : "");
+                String content = bigText.length() > 0 ? bigText.toString() : text.toString();
 
-                // ==================== 根容器 ====================
                 LinearLayout container = new LinearLayout(mContext);
                 container.setOrientation(LinearLayout.HORIZONTAL);
-                container.setPadding(18, 12, 18, 12);
-                container.setGravity(Gravity.CENTER_VERTICAL);
+                container.setPadding(40, 30, 40, 30);
+                container.setBackgroundColor(0xFF1A1A2E);
+                container.setElevation(20);
 
-                GradientDrawable bg = new GradientDrawable();
-                bg.setShape(GradientDrawable.RECTANGLE);
-                bg.setCornerRadius(24);
-                if (USE_FROSTED_GLASS) {
-                    bg.setColor(0xE6FFFFFF);
-                    bg.setStroke(1, 0x33FFFFFF);
-                } else {
-                    bg.setColor(0xFFFFFFFF);
-                }
-                container.setBackground(bg);
-                container.setElevation(12);
-
-                // ==================== 图标 ====================
                 ImageView iconView = new ImageView(mContext);
                 android.graphics.drawable.Icon icon = notification.getSmallIcon();
                 if (icon != null) {
                     iconView.setImageIcon(icon);
                 }
-                LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(40, 40);
-                iconLp.gravity = Gravity.CENTER_VERTICAL;
-                iconView.setLayoutParams(iconLp);
+                iconView.setLayoutParams(new LinearLayout.LayoutParams(100, 100));
                 container.addView(iconView);
 
-                // ==================== 文字区域 ====================
                 LinearLayout textContainer = new LinearLayout(mContext);
                 textContainer.setOrientation(LinearLayout.VERTICAL);
-                LinearLayout.LayoutParams textLp = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f
-                );
-                textLp.setMargins(12, 0, 0, 0);
-                textLp.gravity = Gravity.CENTER_VERTICAL;
-                textContainer.setLayoutParams(textLp);
+                textContainer.setPadding(30, 0, 0, 0);
 
                 TextView titleView = new TextView(mContext);
                 titleView.setText(title);
-                titleView.setTextColor(0xFF000000);
-                titleView.setTextSize(13);
+                titleView.setTextColor(0xFFFFFFFF);
+                titleView.setTextSize(16);
                 titleView.setMaxLines(1);
-                titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 textContainer.addView(titleView);
 
                 TextView contentView = new TextView(mContext);
                 contentView.setText(content);
-                contentView.setTextColor(0xFF444444);
-                contentView.setTextSize(11);
-                contentView.setMaxLines(1);
-                contentView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                contentView.setTextColor(0xFFCCCCCC);
+                contentView.setTextSize(14);
+                contentView.setMaxLines(2);
                 textContainer.addView(contentView);
 
                 container.addView(textContainer);
 
-                // ==================== 点击跳转 ====================
                 PendingIntent contentIntent = notification.contentIntent;
                 container.setOnClickListener(v -> {
                     try {
@@ -267,13 +252,12 @@ public class MainHook implements IXposedHookLoadPackage {
                     } catch (Exception e) {
                         XposedBridge.log(TAG + ": PendingIntent send failed: " + e);
                     }
-                    removeCurrentOverlay();
+                    removeCurrentOverlayInternal();
                 });
 
-                // ==================== 触摸手势（简化版，稳定可靠） ====================
+                /* ===== 修改：触摸手势，新增左滑和下滑穿透 ===== */
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
-
                     @Override
                     public boolean onTouch(View v, MotionEvent event) {
                         switch (event.getAction()) {
@@ -281,36 +265,33 @@ public class MainHook implements IXposedHookLoadPackage {
                                 startX = event.getRawX();
                                 startY = event.getRawY();
                                 return true;
-
                             case MotionEvent.ACTION_UP:
-                                float dx = event.getRawX() - startX;
-                                float dy = event.getRawY() - startY;
-                                boolean isHorizontal = Math.abs(dx) > Math.abs(dy);
+                                float deltaX = event.getRawX() - startX;
+                                float deltaY = event.getRawY() - startY;
+                                boolean isHorizontal = Math.abs(deltaX) > Math.abs(deltaY);
 
                                 // 上滑销毁
-                                if (dy < -100 && !isHorizontal) {
-                                    removeCurrentOverlay();
+                                if (deltaY < -150 && !isHorizontal) {
+                                    removeCurrentOverlayInternal();
                                     return true;
                                 }
-                                // 左滑销毁
-                                if (dx < -100 && isHorizontal) {
-                                    removeCurrentOverlay();
+                                // 左滑销毁（新增）
+                                if (deltaX < -150 && isHorizontal) {
+                                    removeCurrentOverlayInternal();
                                     return true;
                                 }
-                                // 下滑：先移除悬浮窗，让事件穿透给 SystemUI 下拉状态栏
-                                if (dy > 150 && !isHorizontal) {
-                                    removeCurrentOverlay();
+                                // 下滑穿透：同步移除悬浮窗，让事件继续传递给 SystemUI 下拉状态栏
+                                if (deltaY > 150 && !isHorizontal) {
+                                    removeCurrentOverlayInternal(); // 同步移除，不能 post
                                     return false; // 事件继续传递
                                 }
-                                // 其他情况：点击
-                                v.performClick();
                                 return true;
                         }
                         return false;
                     }
                 });
 
-                // ==================== 窗口参数 ====================
+                /* ===== 修改：窗口参数，固定右上角位置和尺寸 ===== */
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WIN_W,
                     WIN_H,
@@ -325,21 +306,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 params.y = WIN_Y;
 
                 mWindowManager.addView(container, params);
+
+                /* ===== 修改：单实例状态保存 ===== */
                 mCurrentKey = key;
                 mCurrentOverlay = container;
 
-                XposedBridge.log(TAG + ": Shown: " + title);
+                XposedBridge.log(TAG + ": Custom Heads-Up shown: " + title);
 
-                // 入场动画
-                container.setAlpha(0f);
-                container.setTranslationY(-30);
-                container.animate()
-                    .alpha(1f)
-                    .translationY(0)
-                    .setDuration(220)
-                    .setInterpolator(new android.view.animation.DecelerateInterpolator())
-                    .start();
-
+                /* ===== 修改：单实例自动消失定时器 ===== */
                 mCurrentDismissRunnable = () -> removeCurrentOverlay();
                 mHandler.postDelayed(mCurrentDismissRunnable, AUTO_DISMISS_MS);
 
@@ -349,8 +323,11 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
+    /* ===== 修改：单实例移除方法 ===== */
     private void removeCurrentOverlay() {
-        if (mHandler == null) return;
+        if (mHandler == null) {
+            mHandler = new Handler(Looper.getMainLooper());
+        }
         mHandler.post(() -> removeCurrentOverlayInternal());
     }
 
@@ -362,7 +339,7 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
                 mWindowManager.removeView(mCurrentOverlay);
-                XposedBridge.log(TAG + ": Removed: " + mCurrentKey);
+                XposedBridge.log(TAG + ": Overlay removed: " + mCurrentKey);
             }
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": removeOverlay error: " + t);
