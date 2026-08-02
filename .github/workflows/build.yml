@@ -23,16 +23,31 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
+    - name: Cache Gradle
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          gradle-${{ runner.os }}-
+
     - name: Install Gradle manually
       run: |
-        wget https://services.gradle.org/distributions/gradle-8.0-bin.zip -O gradle.zip
+        wget --tries=3 --timeout=30 https://services.gradle.org/distributions/gradle-8.0-bin.zip -O gradle.zip
         unzip -q gradle.zip
         mv gradle-8.0 $HOME/gradle
         echo "$HOME/gradle/bin" >> $GITHUB_PATH
         gradle --version
 
     - name: Build Debug APK
-      run: gradle assembleDebug
+      run: |
+        for i in 1 2 3; do
+          gradle assembleDebug --no-daemon --stacktrace && break
+          echo "Build attempt $i failed, retrying in 30s..."
+          sleep 30
+        done
 
     - name: Delete old release
       run: |
