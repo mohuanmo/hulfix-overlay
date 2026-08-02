@@ -3,10 +3,8 @@ package com.example.hulfix;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.Context;
-import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
-import android.graphics.drawable.Icon;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -36,8 +34,8 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private Context mContext;
     private WindowManager mWindowManager;
+    private Handler mHandler;
     private final Map<String, View> mActiveOverlays = new HashMap<>();
-    private final Handler mHandler = new Handler(Looper.getMainLooper());
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -45,14 +43,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
         XposedBridge.log(TAG + ": ====== HULFix Overlay loaded ======");
 
-        // Hook ExpandableNotificationRow.setHeadsUpIsVisible
-        // 当系统要显示 Heads-Up 时触发
+        // 延迟初始化 Handler，确保主线程 Looper 已准备好
+        if (mHandler == null) {
+            mHandler = new Handler(Looper.getMainLooper());
+        }
+
         hookHeadsUpIsVisible(lpparam);
-
-        // Hook setHeadsUpAnimatingAway 作为备用
         hookAnimatingAway(lpparam);
-
-        // Hook NotificationEntry 获取通知内容
         hookNotificationEntry(lpparam);
     }
 
@@ -71,23 +68,19 @@ public class MainHook implements IXposedHookLoadPackage {
                             View rowView = (View) param.thisObject;
                             if (!isLandscape(rowView)) return;
 
-                            // 获取通知内容
                             StatusBarNotification sbn = getSbnFromRow(rowView);
                             if (sbn == null) return;
 
                             String key = sbn.getKey();
                             XposedBridge.log(TAG + ": HeadsUpIsVisible triggered, key=" + key);
 
-                            // 阻止系统显示（我们自己显示）
                             param.setResult(null);
 
-                            // 获取 Context
                             if (mContext == null) {
                                 mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
                                 mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
                             }
 
-                            // 显示自定义 Heads-Up
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
@@ -124,13 +117,10 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (sbn == null) return;
 
                             String key = sbn.getKey();
-
-                            // 如果已经有 overlay，不重复创建
                             if (mActiveOverlays.containsKey(key)) return;
 
                             XposedBridge.log(TAG + ": AnimatingAway(false) + landscape, key=" + key);
 
-                            // 阻止系统显示
                             param.setResult(null);
 
                             if (mContext == null) {
@@ -153,7 +143,6 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 备用：Hook NotificationEntry 获取通知
         try {
             Class<?> entryClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.notification.collection.NotificationEntry",
@@ -167,7 +156,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private StatusBarNotification getSbnFromRow(View rowView) {
         try {
-            // 尝试获取 mEntry 字段
             Object entry = XposedHelpers.getObjectField(rowView, "mEntry");
             if (entry == null) {
                 entry = XposedHelpers.getObjectField(rowView, "mSbn");
@@ -175,7 +163,6 @@ public class MainHook implements IXposedHookLoadPackage {
             if (entry instanceof StatusBarNotification) {
                 return (StatusBarNotification) entry;
             }
-            // 如果 entry 是 NotificationEntry，获取其 mSbn
             if (entry != null) {
                 Object sbn = XposedHelpers.getObjectField(entry, "mSbn");
                 if (sbn instanceof StatusBarNotification) {
@@ -195,13 +182,15 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void showCustomHeadsUp(StatusBarNotification sbn) {
         if (mContext == null || mWindowManager == null) return;
+        if (mHandler == null) {
+            mHandler = new Handler(Looper.getMainLooper());
+        }
 
         final String key = sbn.getKey();
 
         mHandler.post(() -> {
             try {
-                // 移除已有的同 key overlay
-                removeOverlay(key);
+                removeOverlayInternal(key);
 
                 Notification notification = sbn.getNotification();
                 Bundle extras = notification.extras;
@@ -211,23 +200,20 @@ public class MainHook implements IXposedHookLoadPackage {
                 CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "");
                 String content = bigText.length() > 0 ? bigText.toString() : text.toString();
 
-                // 创建自定义 View
                 LinearLayout container = new LinearLayout(mContext);
                 container.setOrientation(LinearLayout.HORIZONTAL);
                 container.setPadding(40, 30, 40, 30);
-                container.setBackgroundColor(0xFF1A1A2E); // 深色背景
+                container.setBackgroundColor(0xFF1A1A2E);
                 container.setElevation(20);
 
-                // 图标
                 ImageView iconView = new ImageView(mContext);
-                Icon icon = notification.getSmallIcon();
+                android.graphics.drawable.Icon icon = notification.getSmallIcon();
                 if (icon != null) {
                     iconView.setImageIcon(icon);
                 }
                 iconView.setLayoutParams(new LinearLayout.LayoutParams(100, 100));
                 container.addView(iconView);
 
-                // 文本区域
                 LinearLayout textContainer = new LinearLayout(mContext);
                 textContainer.setOrientation(LinearLayout.VERTICAL);
                 textContainer.setPadding(30, 0, 0, 0);
@@ -248,7 +234,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 container.addView(textContainer);
 
-                // 点击处理
                 PendingIntent contentIntent = notification.contentIntent;
                 container.setOnClickListener(v -> {
                     try {
@@ -261,7 +246,6 @@ public class MainHook implements IXposedHookLoadPackage {
                     removeOverlay(key);
                 });
 
-                // 滑动移除
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startY;
                     @Override
@@ -281,7 +265,6 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-                // WindowManager 参数
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -292,14 +275,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     PixelFormat.TRANSLUCENT
                 );
                 params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-                params.y = 20; // 距离顶部 20px
+                params.y = 20;
 
                 mWindowManager.addView(container, params);
                 mActiveOverlays.put(key, container);
 
                 XposedBridge.log(TAG + ": Custom Heads-Up shown: " + title);
 
-                // 自动消失
                 mHandler.postDelayed(() -> removeOverlay(key), AUTO_DISMISS_MS);
 
             } catch (Throwable t) {
@@ -309,16 +291,21 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void removeOverlay(String key) {
-        mHandler.post(() -> {
-            try {
-                View view = mActiveOverlays.remove(key);
-                if (view != null && view.getParent() != null) {
-                    mWindowManager.removeView(view);
-                    XposedBridge.log(TAG + ": Overlay removed: " + key);
-                }
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": removeOverlay error: " + t);
+        if (mHandler == null) {
+            mHandler = new Handler(Looper.getMainLooper());
+        }
+        mHandler.post(() -> removeOverlayInternal(key));
+    }
+
+    private void removeOverlayInternal(String key) {
+        try {
+            View view = mActiveOverlays.remove(key);
+            if (view != null && view.getParent() != null) {
+                mWindowManager.removeView(view);
+                XposedBridge.log(TAG + ": Overlay removed: " + key);
             }
-        });
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": removeOverlay error: " + t);
+        }
     }
 }
