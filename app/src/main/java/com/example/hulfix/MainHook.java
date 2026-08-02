@@ -24,33 +24,26 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
+import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.Map;
+
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
     private static final long AUTO_DISMISS_MS = 5000;
 
-    /* ===== 新增：窗口固定位置（基于用户设备像素坐标） ===== */
-    // 左上(1386,77)  右上(2059,77)
-    // 左下(1386,196) 右下(2057,196)
-    private static final int WIN_X = 1386;
-    private static final int WIN_Y = 77;
-    private static final int WIN_W = 673;   // 2059 - 1386
-    private static final int WIN_H = 119;   // 196 - 77
-
     private Context mContext;
     private WindowManager mWindowManager;
     private Handler mHandler;
-
-    /* ===== 修改：单实例，只保留最新一条通知 ===== */
-    private String mCurrentKey = null;
-    private View mCurrentOverlay = null;
-    private Runnable mCurrentDismissRunnable = null;
+    private final Map<String, View> mActiveOverlays = new HashMap<>();
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v7 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay loaded ======");
 
+        // 延迟初始化 Handler，确保主线程 Looper 已准备好
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
         }
@@ -124,8 +117,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (sbn == null) return;
 
                             String key = sbn.getKey();
-                            /* ===== 修改：单实例去重 ===== */
-                            if (key.equals(mCurrentKey)) return;
+                            if (mActiveOverlays.containsKey(key)) return;
 
                             XposedBridge.log(TAG + ": AnimatingAway(false) + landscape, key=" + key);
 
@@ -184,7 +176,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private boolean isLandscape(View view) {
-        return view.getResources().getConfiguration().orientation
+        return view.getResources().getConfiguration().orientation 
             == Configuration.ORIENTATION_LANDSCAPE;
     }
 
@@ -198,8 +190,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
-                /* ===== 修改：单实例，新通知替换旧通知 ===== */
-                removeCurrentOverlayInternal();
+                removeOverlayInternal(key);
 
                 Notification notification = sbn.getNotification();
                 Bundle extras = notification.extras;
@@ -252,10 +243,9 @@ public class MainHook implements IXposedHookLoadPackage {
                     } catch (Exception e) {
                         XposedBridge.log(TAG + ": PendingIntent send failed: " + e);
                     }
-                    removeCurrentOverlayInternal();
+                    removeOverlay(key);
                 });
 
-                /* ===== 修改：触摸手势，新增左滑和下滑穿透 ===== */
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
                     @Override
@@ -269,21 +259,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float deltaX = event.getRawX() - startX;
                                 float deltaY = event.getRawY() - startY;
                                 boolean isHorizontal = Math.abs(deltaX) > Math.abs(deltaY);
-
-                                // 上滑销毁
                                 if (deltaY < -150 && !isHorizontal) {
-                                    removeCurrentOverlayInternal();
-                                    return true;
-                                }
-                                // 左滑销毁（新增）
-                                if (deltaX < -150 && isHorizontal) {
-                                    removeCurrentOverlayInternal();
-                                    return true;
-                                }
-                                // 下滑穿透：同步移除悬浮窗，让事件继续传递给 SystemUI 下拉状态栏
-                                if (deltaY > 150 && !isHorizontal) {
-                                    removeCurrentOverlayInternal(); // 同步移除，不能 post
-                                    return false; // 事件继续传递
+                                    removeOverlay(key);
+                                } else if (deltaX < -150 && isHorizontal) {
+                                    removeOverlay(key);
                                 }
                                 return true;
                         }
@@ -291,31 +270,25 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-                /* ===== 修改：窗口参数，固定右上角位置和尺寸 ===== */
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WIN_W,
-                    WIN_H,
+                    673,
+                    119,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE 
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT
                 );
                 params.gravity = Gravity.TOP | Gravity.LEFT;
-                params.x = WIN_X;
-                params.y = WIN_Y;
+                params.x = 1386;
+                params.y = 77;
 
                 mWindowManager.addView(container, params);
-
-                /* ===== 修改：单实例状态保存 ===== */
-                mCurrentKey = key;
-                mCurrentOverlay = container;
+                mActiveOverlays.put(key, container);
 
                 XposedBridge.log(TAG + ": Custom Heads-Up shown: " + title);
 
-                /* ===== 修改：单实例自动消失定时器 ===== */
-                mCurrentDismissRunnable = () -> removeCurrentOverlay();
-                mHandler.postDelayed(mCurrentDismissRunnable, AUTO_DISMISS_MS);
+                mHandler.postDelayed(() -> removeOverlay(key), AUTO_DISMISS_MS);
 
             } catch (Throwable t) {
                 XposedBridge.log(TAG + ": showCustomHeadsUp error: " + t);
@@ -323,29 +296,22 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
-    /* ===== 修改：单实例移除方法 ===== */
-    private void removeCurrentOverlay() {
+    private void removeOverlay(String key) {
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
         }
-        mHandler.post(() -> removeCurrentOverlayInternal());
+        mHandler.post(() -> removeOverlayInternal(key));
     }
 
-    private void removeCurrentOverlayInternal() {
+    private void removeOverlayInternal(String key) {
         try {
-            if (mCurrentDismissRunnable != null) {
-                mHandler.removeCallbacks(mCurrentDismissRunnable);
-                mCurrentDismissRunnable = null;
-            }
-            if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
-                mWindowManager.removeView(mCurrentOverlay);
-                XposedBridge.log(TAG + ": Overlay removed: " + mCurrentKey);
+            View view = mActiveOverlays.remove(key);
+            if (view != null && view.getParent() != null) {
+                mWindowManager.removeView(view);
+                XposedBridge.log(TAG + ": Overlay removed: " + key);
             }
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": removeOverlay error: " + t);
-        } finally {
-            mCurrentOverlay = null;
-            mCurrentKey = null;
         }
     }
 }
