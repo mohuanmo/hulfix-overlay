@@ -31,23 +31,18 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final long ANIM_DURATION_MS = 200;
 
     /* ===== UI 方案开关 ===== */
-    // true  = 半透明磨砂（90%白 + 描边，AOSP 13 效果接近原生）
-    // false = 纯白圆角（最稳妥）
     private static final boolean USE_FROSTED_GLASS = true;
 
-    /* ===== 窗口位置（基于用户设备像素坐标） ===== */
-    // 左上(1390,77)  右上(2059,77)
-    // 左下(1386,196) 右下(2057,196)
-    // 取最小包围矩形
+    /* ===== 窗口位置 ===== */
     private static final int WIN_X = 1386;
     private static final int WIN_Y = 77;
-    private static final int WIN_W = 673;   // 2059 - 1386
-    private static final int WIN_H = 119;   // 196 - 77
+    private static final int WIN_W = 673;
+    private static final int WIN_H = 119;
 
     /* ===== 手势阈值 ===== */
-    private static final float SWIPE_DESTROY_THRESHOLD = 100f;   // 上滑/左滑销毁
-    private static final float PULLDOWN_THRESHOLD = 150f;        // 下滑下拉状态栏（更大，防误触）
-    private static final float MOVE_THRESHOLD = 12f;             // 判定为滑动的最小位移
+    private static final float SWIPE_DESTROY_THRESHOLD = 100f;
+    private static final float PULLDOWN_THRESHOLD = 150f;
+    private static final float MOVE_THRESHOLD = 12f;
 
     private Context mContext;
     private WindowManager mWindowManager;
@@ -60,21 +55,47 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        if (!"com.android.systemui".equals(lpparam.packageName)) return;
+        // 【关键修复1】整个 handleLoadPackage 用 try-catch 包裹
+        // 防止任何异常导致模块加载静默失败
+        try {
+            if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v4 loaded ======");
-        XposedBridge.log(TAG + ": UI mode: " + (USE_FROSTED_GLASS ? "Frosted" : "White"));
+            XposedBridge.log(TAG + ": ====== HULFix Overlay v5 loaded ======");
 
-        if (mHandler == null) {
-            mHandler = new Handler(Looper.getMainLooper());
+            // 【关键修复2】Handler 不再在这里初始化！
+            // 推迟到真正需要时（showCustomHeadsUp 被调用时）再初始化
+            // 避免 SystemUI 主线程 Looper 未就绪时 NPE
+
+            hookHeadsUpIsVisible(lpparam);
+            hookAnimatingAway(lpparam);
+
+            XposedBridge.log(TAG + ": All hooks registered OK");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": FATAL handleLoadPackage error: " + t);
+            // 打印完整堆栈到 Xposed 日志
+            for (StackTraceElement e : t.getStackTrace()) {
+                XposedBridge.log(TAG + ":   at " + e);
+            }
         }
-
-        hookHeadsUpIsVisible(lpparam);
-        hookAnimatingAway(lpparam);
     }
 
     /* ================================================================ */
-    /*  Hook 1：系统要显示 Heads-Up 时触发                             */
+    /*  【关键修复3】安全的 Handler 获取：只在主线程 Looper 就绪后创建  */
+    /* ================================================================ */
+    private Handler getHandler() {
+        if (mHandler == null) {
+            try {
+                mHandler = new Handler(Looper.getMainLooper());
+                XposedBridge.log(TAG + ": Handler initialized");
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": Handler init failed: " + t);
+            }
+        }
+        return mHandler;
+    }
+
+    /* ================================================================ */
+    /*  Hook 1                                                          */
     /* ================================================================ */
     private void hookHeadsUpIsVisible(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -108,19 +129,22 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpIsVisible error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpIsVisible hook error: " + t);
                         }
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": setHeadsUpIsVisible hook failed: " + t);
+            XposedBridge.log(TAG + ": setHeadsUpIsVisible hook FAILED: " + t);
+            for (StackTraceElement e : t.getStackTrace()) {
+                XposedBridge.log(TAG + ":   at " + e);
+            }
         }
     }
 
     /* ================================================================ */
-    /*  Hook 2：动画结束兜底触发                                       */
+    /*  Hook 2                                                          */
     /* ================================================================ */
     private void hookAnimatingAway(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -157,19 +181,22 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook error: " + t);
                         }
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway OK");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook failed: " + t);
+            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook FAILED: " + t);
+            for (StackTraceElement e : t.getStackTrace()) {
+                XposedBridge.log(TAG + ":   at " + e);
+            }
         }
     }
 
     /* ================================================================ */
-    /*  通知过滤：只让真正该弹 Heads-Up 的消息通过                      */
+    /*  通知过滤                                                        */
     /* ================================================================ */
     private boolean shouldShowHeadsUp(StatusBarNotification sbn, View rowView) {
         try {
@@ -227,14 +254,21 @@ public class MainHook implements IXposedHookLoadPackage {
     /*  显示自定义 Heads-Up 悬浮窗                                      */
     /* ================================================================ */
     private void showCustomHeadsUp(StatusBarNotification sbn) {
-        if (mContext == null || mWindowManager == null) return;
-        if (mHandler == null) {
-            mHandler = new Handler(Looper.getMainLooper());
+        // 【关键修复4】Handler 在这里安全初始化
+        Handler h = getHandler();
+        if (h == null) {
+            XposedBridge.log(TAG + ": Handler is null, cannot show overlay");
+            return;
+        }
+
+        if (mContext == null || mWindowManager == null) {
+            XposedBridge.log(TAG + ": Context/WM not ready");
+            return;
         }
 
         final String key = sbn.getKey();
 
-        mHandler.post(() -> {
+        h.post(() -> {
             try {
                 removeCurrentOverlayInternal(false);
 
@@ -345,11 +379,8 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
 
                                 if (!isClick) {
-                                    // 跟手移动
                                     v.setTranslationX(dx);
                                     v.setTranslationY(dy);
-
-                                    // 距离越远越透明（最低 0.5）
                                     float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                     float alpha = Math.max(0.5f, 1f - dist / 350f);
                                     v.setAlpha(alpha);
@@ -363,32 +394,27 @@ public class MainHook implements IXposedHookLoadPackage {
 
                                 v.animate().scaleX(1f).scaleY(1f).setDuration(60).start();
 
-                                // 上滑销毁
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
                                     animateRemoveCurrent(totalDx, -350);
                                     return true;
                                 }
 
-                                // 左滑销毁
                                 if (totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     animateRemoveCurrent(-450, totalDy);
                                     return true;
                                 }
 
-                                // 下滑：下拉状态栏 + 销毁（阈值更大，防误触）
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandNotificationsPanel();
                                     animateRemoveCurrent(totalDx, 150);
                                     return true;
                                 }
 
-                                // 点击
                                 if (isClick) {
                                     v.performClick();
                                     return true;
                                 }
 
-                                // 滑动但未超阈值：回弹
                                 v.animate()
                                     .translationX(0)
                                     .translationY(0)
@@ -422,7 +448,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 XposedBridge.log(TAG + ": Shown: " + title);
 
-                // 入场动画
                 container.setAlpha(0f);
                 container.setTranslationY(-30);
                 container.animate()
@@ -433,7 +458,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     .start();
 
                 mCurrentDismissRunnable = () -> animateRemoveCurrent(0, -80);
-                mHandler.postDelayed(mCurrentDismissRunnable, AUTO_DISMISS_MS);
+                h.postDelayed(mCurrentDismissRunnable, AUTO_DISMISS_MS);
 
             } catch (Throwable t) {
                 XposedBridge.log(TAG + ": showCustomHeadsUp error: " + t);
@@ -442,7 +467,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  下拉状态栏（通过 StatusBarManager hide API）                    */
+    /*  下拉状态栏                                                      */
     /* ================================================================ */
     private void expandNotificationsPanel() {
         try {
@@ -457,17 +482,18 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  带动画的移除（从当前跟手位置继续飞出）                        */
+    /*  带动画的移除                                                    */
     /* ================================================================ */
     private void animateRemoveCurrent(float extraDeltaX, float extraDeltaY) {
-        if (mHandler == null) return;
-        mHandler.post(() -> {
+        Handler h = getHandler();
+        if (h == null) return;
+        h.post(() -> {
             if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) return;
             if (mIsAnimating) return;
             mIsAnimating = true;
 
             if (mCurrentDismissRunnable != null) {
-                mHandler.removeCallbacks(mCurrentDismissRunnable);
+                h.removeCallbacks(mCurrentDismissRunnable);
                 mCurrentDismissRunnable = null;
             }
 
@@ -489,14 +515,16 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void removeCurrentOverlay() {
-        if (mHandler == null) return;
-        mHandler.post(() -> removeCurrentOverlayInternal(false));
+        Handler h = getHandler();
+        if (h == null) return;
+        h.post(() -> removeCurrentOverlayInternal(false));
     }
 
     private void removeCurrentOverlayInternal(boolean waitAnimation) {
         try {
             if (mCurrentDismissRunnable != null) {
-                mHandler.removeCallbacks(mCurrentDismissRunnable);
+                Handler h = getHandler();
+                if (h != null) h.removeCallbacks(mCurrentDismissRunnable);
                 mCurrentDismissRunnable = null;
             }
             if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
