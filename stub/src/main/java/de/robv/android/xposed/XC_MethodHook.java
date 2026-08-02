@@ -7,6 +7,16 @@ public abstract class XC_MethodHook {
         public Object result;
         public Throwable throwable;
         public boolean returnEarly;
+
+        public void setResult(Object result) {
+            this.result = result;
+            this.returnEarly = true;
+        }
+
+        public void setThrowable(Throwable throwable) {
+            this.throwable = throwable;
+            this.returnEarly = true;
+        }
     }
 
     public static class Unhook {
