@@ -1,8 +1,12 @@
 package com.example.hulfix;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
@@ -25,8 +29,6 @@ import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
-
-import java.lang.reflect.Method;
 
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
@@ -62,11 +64,13 @@ public class MainHook implements IXposedHookLoadPackage {
     private Runnable mAutoDismissRunnable = null;
     private long mLastDismissTime = 0;
 
-    /* ===== 【新增】HeadsUpManager 实例 ===== */
+    /* ===== 系统实例 ===== */
     private Object mHeadsUpManager = null;
-
-    /* ===== 【新增】StatusBar 实例（用于彻底移除系统通知） ===== */
     private Object mStatusBar = null;
+
+    /* ===== 屏幕广播 ===== */
+    private BroadcastReceiver mScreenReceiver = null;
+    private boolean mBroadcastRegistered = false;
 
     /* ===== 手动动画 Runnable ===== */
     private Runnable mEnterAnimRunnable = null;
@@ -77,7 +81,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v21 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v22 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -90,7 +94,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  【新增】捕获 HeadsUpManager 实例                                */
+    /*  捕获 HeadsUpManager 实例                                        */
     /* ================================================================ */
     private void captureHeadsUpManager(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -113,7 +117,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  【新增】捕获 StatusBar 实例（用于彻底移除系统通知视图）        */
+    /*  捕获 StatusBar 实例 + 下拉检测                                  */
     /* ================================================================ */
     private void captureStatusBar(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -121,22 +125,65 @@ public class MainHook implements IXposedHookLoadPackage {
                 "com.android.systemui.statusbar.phone.StatusBar",
                 lpparam.classLoader
             );
-            XposedBridge.hookAllMethods(statusBarClass, "addNotification",
+
+            // 1. 构造函数捕获（最早）
+            XposedBridge.hookAllConstructors(statusBarClass,
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         mStatusBar = param.thisObject;
+                        XposedBridge.log(TAG + ": StatusBar captured via constructor");
                     }
                 }
             );
-            XposedBridge.log(TAG + ": StatusBar capture hooked");
+
+            // 2. start() 捕获（备用）
+            XposedHelpers.findAndHookMethod(statusBarClass, "start",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (mStatusBar == null) {
+                            mStatusBar = param.thisObject;
+                            XposedBridge.log(TAG + ": StatusBar captured via start()");
+                        }
+                    }
+                }
+            );
+
+            // 3. addNotification 捕获（最终 fallback）
+            XposedBridge.hookAllMethods(statusBarClass, "addNotification",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (mStatusBar == null) {
+                            mStatusBar = param.thisObject;
+                            XposedBridge.log(TAG + ": StatusBar captured via addNotification");
+                        }
+                    }
+                }
+            );
+
+            // 4. 下拉状态栏检测：展开时销毁 overlay
+            XposedHelpers.findAndHookMethod(statusBarClass, "expandNotificationsPanel",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (mCurrentOverlay != null) {
+                            XposedBridge.log(TAG + ": expandNotificationsPanel, destroy overlay");
+                            removeOverlayImmediate();
+                        }
+                    }
+                }
+            );
+
+            XposedBridge.log(TAG + ": StatusBar hooks installed");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": StatusBar capture failed: " + t);
+            XposedBridge.log(TAG + ": StatusBar hooks failed: " + t);
         }
     }
 
     /* ================================================================ */
-    /*  【新增】从 HeadsUpManager 中彻底移除通知 Entry                  */
+    /*  从 HeadsUpManager 中彻底移除通知 Entry                          */
     /* ================================================================ */
     private void removeSystemHeadsUpEntry(String key) {
         if (mHeadsUpManager != null && key != null) {
@@ -153,7 +200,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  【新增】从 StatusBar 彻底移除通知视图                           */
+    /*  从 StatusBar 彻底移除通知视图                                   */
     /* ================================================================ */
     private void removeSystemNotificationView(String key) {
         if (mStatusBar != null && key != null) {
@@ -167,7 +214,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  判断通知是否新鲜（3 秒内）                                        */
+    /*  判断通知是否新鲜（3 秒内）                                      */
     /* ================================================================ */
     private boolean isFreshNotification(StatusBarNotification sbn) {
         long age = System.currentTimeMillis() - sbn.getPostTime();
@@ -175,7 +222,66 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  Hook 1                                                          */
+    /*  【v22 新增】判断当前是否锁屏                                    */
+    /* ================================================================ */
+    private boolean isKeyguardLocked() {
+        if (mContext == null) return false;
+        try {
+            KeyguardManager km = (KeyguardManager) mContext.getSystemService(Context.KEYGUARD_SERVICE);
+            return km != null && km.isKeyguardLocked();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /* ================================================================ */
+    /*  【v22 新增】判断状态栏是否已展开                                */
+    /* ================================================================ */
+    private boolean isStatusBarExpanded() {
+        if (mStatusBar == null) return false;
+        try {
+            return (boolean) XposedHelpers.getBooleanField(mStatusBar, "mExpandedVisible");
+        } catch (Throwable t1) {
+            try {
+                return (boolean) XposedHelpers.getBooleanField(mStatusBar, "mIsExpanded");
+            } catch (Throwable t2) {
+                try {
+                    return (boolean) XposedHelpers.getBooleanField(mStatusBar, "mPanelExpanded");
+                } catch (Throwable ignored) {}
+            }
+        }
+        return false;
+    }
+
+    /* ================================================================ */
+    /*  【v22 新增】注册屏幕息屏广播接收器                              */
+    /* ================================================================ */
+    private void registerScreenReceiver() {
+        if (mBroadcastRegistered || mContext == null) return;
+        try {
+            mScreenReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                        if (mCurrentOverlay != null) {
+                            XposedBridge.log(TAG + ": Screen OFF, destroy overlay immediately");
+                            removeOverlayImmediate();
+                        }
+                    }
+                }
+            };
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_SCREEN_OFF);
+            mContext.registerReceiver(mScreenReceiver, filter);
+            mBroadcastRegistered = true;
+            XposedBridge.log(TAG + ": Screen receiver registered");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": Screen receiver register failed: " + t);
+        }
+    }
+
+    /* ================================================================ */
+    /*  Hook 1: setHeadsUpIsVisible                                     */
     /* ================================================================ */
     private void hookHeadsUpIsVisible(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -241,7 +347,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  Hook 2                                                          */
+    /*  Hook 2: setHeadsUpAnimatingAway                                 */
     /* ================================================================ */
     private void hookAnimatingAway(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -264,7 +370,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
                             if (animatingAway) return;
 
-                            // 【修复 v20】增加 isHeadsUp 判断，防止拦截通知展开/折叠
                             boolean isHeadsUp = false;
                             try {
                                 isHeadsUp = (boolean) XposedHelpers.callMethod(rowView, "isHeadsUp");
@@ -348,24 +453,6 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  清理系统 Heads-Up 状态                                          */
-    /* ================================================================ */
-    private void clearSystemHeadsUp() {
-        if (mCurrentRowView != null) {
-            try {
-                XposedHelpers.callMethod(mCurrentRowView, "setHeadsUp", false);
-                XposedBridge.log(TAG + ": setHeadsUp(false) called");
-            } catch (Throwable t1) {
-                try {
-                    XposedHelpers.callMethod(mCurrentRowView, "setHeadsUpAnimatingAway", true);
-                    XposedBridge.log(TAG + ": setHeadsUpAnimatingAway(true) called");
-                } catch (Throwable ignored) {}
-            }
-            mCurrentRowView = null;
-        }
-    }
-
-    /* ================================================================ */
     /*  取消所有手动动画                                                */
     /* ================================================================ */
     private void cancelAllAnimations() {
@@ -391,23 +478,25 @@ public class MainHook implements IXposedHookLoadPackage {
         view.setAlpha(0f);
         view.setTranslationY(-40f);
         view.setTranslationX(0f);
+        view.setScaleX(0.96f);
+        view.setScaleY(0.96f);
 
         mEnterAnimRunnable = new Runnable() {
-            int frame = 0;
-            final int totalFrames = 18;
+            int step = 0;
+            final int totalSteps = 10;
+            final long stepMs = 16;
+
             @Override
             public void run() {
-                if (view.getParent() == null) {
-                    mEnterAnimRunnable = null;
-                    return;
-                }
-                frame++;
-                float fraction = Math.min(1f, (float) frame / totalFrames);
-                float decel = 1f - (1f - fraction) * (1f - fraction);
-                view.setAlpha(decel);
-                view.setTranslationY(-40f * (1f - decel));
-                if (frame < totalFrames) {
-                    mHandler.postDelayed(this, 16);
+                step++;
+                float f = step / (float) totalSteps;
+                float ease = 1f - (1f - f) * (1f - f);
+                view.setAlpha(ease);
+                view.setTranslationY(-40f * (1f - ease));
+                view.setScaleX(0.96f + 0.04f * ease);
+                view.setScaleY(0.96f + 0.04f * ease);
+                if (step < totalSteps) {
+                    mHandler.postDelayed(this, stepMs);
                 } else {
                     mEnterAnimRunnable = null;
                 }
@@ -417,32 +506,24 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  出场动画                                                        */
+    /*  离场动画                                                        */
     /* ================================================================ */
     private void startExitAnimation(final View view, final Runnable onEnd) {
         cancelAllAnimations();
-        final float startAlpha = view.getAlpha();
-        final float startTy = view.getTranslationY();
-        final float startTx = view.getTranslationX();
-
         mExitAnimRunnable = new Runnable() {
-            int frame = 0;
-            final int totalFrames = 13;
+            int step = 0;
+            final int totalSteps = 8;
+            final long stepMs = 16;
+
             @Override
             public void run() {
-                if (view.getParent() == null) {
-                    mExitAnimRunnable = null;
-                    if (onEnd != null) onEnd.run();
-                    return;
-                }
-                frame++;
-                float fraction = Math.min(1f, (float) frame / totalFrames);
-                float accel = fraction * fraction;
-                view.setAlpha(startAlpha * (1f - accel));
-                view.setTranslationY(startTy - 60f * accel);
-                view.setTranslationX(startTx);
-                if (frame < totalFrames) {
-                    mHandler.postDelayed(this, 16);
+                step++;
+                float f = step / (float) totalSteps;
+                float ease = f * f;
+                view.setAlpha(1f - ease);
+                view.setTranslationX(-80f * ease);
+                if (step < totalSteps) {
+                    mHandler.postDelayed(this, stepMs);
                 } else {
                     mExitAnimRunnable = null;
                     if (onEnd != null) onEnd.run();
@@ -457,33 +538,24 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ================================================================ */
     private void startBounceAnimation(final View view) {
         cancelAllAnimations();
-        final float startTx = view.getTranslationX();
-        final float startTy = view.getTranslationY();
-        final float startAlpha = view.getAlpha();
-
         mBounceAnimRunnable = new Runnable() {
-            int frame = 0;
-            final int totalFrames = 15;
+            int step = 0;
+            final int totalSteps = 12;
+            final long stepMs = 16;
+
             @Override
             public void run() {
-                if (view.getParent() == null) {
-                    mBounceAnimRunnable = null;
-                    return;
-                }
-                frame++;
-                float fraction = Math.min(1f, (float) frame / totalFrames);
-                float overshoot = (float) Math.sin(fraction * Math.PI) * 0.15f * (1f - fraction);
-                float eased = fraction + overshoot;
-                view.setTranslationX(startTx * (1f - eased));
-                view.setTranslationY(startTy * (1f - eased));
-                view.setAlpha(startAlpha + (1f - startAlpha) * fraction);
-                if (frame < totalFrames) {
-                    mHandler.postDelayed(this, 16);
+                step++;
+                float f = step / (float) totalSteps;
+                float sin = (float) Math.sin(f * Math.PI);
+                float offset = 18f * sin * (1f - f);
+                view.setTranslationX(offset);
+                view.setAlpha(1f);
+                if (step < totalSteps) {
+                    mHandler.postDelayed(this, stepMs);
                 } else {
+                    view.setTranslationX(0f);
                     mBounceAnimRunnable = null;
-                    view.setTranslationX(0);
-                    view.setTranslationY(0);
-                    view.setAlpha(1f);
                 }
             }
         };
@@ -491,13 +563,28 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  显示自定义 Heads-Up 悬浮窗                                      */
+    /*  显示自定义 Heads-Up                                             */
     /* ================================================================ */
     private void showCustomHeadsUp(StatusBarNotification sbn) {
         if (mContext == null || mWindowManager == null) return;
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
         }
+
+        // 【v22 新增】锁屏时不显示
+        if (isKeyguardLocked()) {
+            XposedBridge.log(TAG + ": Keyguard locked, skip showing");
+            return;
+        }
+
+        // 【v22 新增】状态栏已展开时不显示
+        if (isStatusBarExpanded()) {
+            XposedBridge.log(TAG + ": StatusBar expanded, skip showing");
+            return;
+        }
+
+        // 【v22 新增】注册屏幕息屏广播（延迟注册，只执行一次）
+        registerScreenReceiver();
 
         final String key = sbn.getKey();
         final Notification notification = sbn.getNotification();
@@ -608,7 +695,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 container.addView(readBtn);
 
-                // ===== 方向锁定滑动 + 点击跳转（【修复 v21】合并到 onTouch 中）=====
+                // ===== 方向锁定滑动 + 点击跳转（合并到 onTouch 中）=====
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
                     boolean lockedHorizontal = false;
@@ -667,7 +754,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
                                 }
 
-                                // 【修复 v21】滑动手势判断
+                                // 滑动手势判断
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
                                     dismissOverlayAnimated();
                                     return true;
@@ -686,7 +773,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     return true;
                                 }
 
-                                // 【修复 v21】不是滑动手势，视为点击，直接执行跳转
+                                // 不是滑动手势，视为点击，执行跳转
                                 if (Math.abs(totalDx) < SWIPE_DESTROY_THRESHOLD && Math.abs(totalDy) < SWIPE_DESTROY_THRESHOLD) {
                                     performContentClick(contentIntent);
                                     dismissOverlayAnimated();
@@ -733,23 +820,37 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  【修复 v21】点击跳转逻辑抽离为独立方法                          */
+    /*  【v22 修复】点击跳转：带 ActivityOptions                        */
     /* ================================================================ */
     private void performContentClick(PendingIntent contentIntent) {
         if (contentIntent == null) return;
         try {
-            // 方案1: 直接 send()，和已读按钮一样
-            contentIntent.send();
-            XposedBridge.log(TAG + ": ContentIntent sent (direct)");
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": ContentIntent direct send failed: " + e);
-            try {
-                // 方案2: 使用 mContext 启动
+            Bundle opts = createLaunchOptions();
+            if (opts != null) {
+                XposedHelpers.callMethod(contentIntent, "send",
+                    mContext, 0, null, null, null, null, opts);
+                XposedBridge.log(TAG + ": ContentIntent sent with ActivityOptions");
+            } else {
                 contentIntent.send(mContext, 0, null);
-                XposedBridge.log(TAG + ": ContentIntent sent with mContext");
-            } catch (Exception e2) {
-                XposedBridge.log(TAG + ": ContentIntent all failed: " + e2);
+                XposedBridge.log(TAG + ": ContentIntent sent with context");
             }
+        } catch (Throwable e) {
+            XposedBridge.log(TAG + ": ContentIntent failed: " + e);
+            try {
+                contentIntent.send();
+                XposedBridge.log(TAG + ": ContentIntent sent (direct fallback)");
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    private Bundle createLaunchOptions() {
+        try {
+            Class<?> aoClass = Class.forName("android.app.ActivityOptions");
+            Object ao = XposedHelpers.callStaticMethod(aoClass, "makeBasic");
+            XposedHelpers.callMethod(ao, "setLaunchWindowingMode", 1); // WINDOWING_MODE_FULLSCREEN
+            return (Bundle) XposedHelpers.callMethod(ao, "toBundle");
+        } catch (Throwable t) {
+            return null;
         }
     }
 
@@ -758,7 +859,7 @@ public class MainHook implements IXposedHookLoadPackage {
         try {
             Object sbm = mContext.getSystemService("statusbar");
             if (sbm != null) {
-                Method expand = sbm.getClass().getMethod("expandNotificationsPanel");
+                java.lang.reflect.Method expand = sbm.getClass().getMethod("expandNotificationsPanel");
                 expand.invoke(sbm);
                 XposedBridge.log(TAG + ": expandNotificationsPanel OK");
             }
@@ -785,7 +886,7 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
-    /* ===== 立即移除 ===== */
+    /* ===== 立即移除（【v22】清理逻辑统一，删除死代码） ===== */
     private void removeOverlayImmediate() {
         cancelAllAnimations();
         if (mAutoDismissRunnable != null) {
@@ -796,9 +897,13 @@ public class MainHook implements IXposedHookLoadPackage {
         String keyToRemove = mCurrentKey;
         View rowViewSnapshot = mCurrentRowView;
 
-        // 【修复 v20】先彻底清理系统 Heads-Up，再清空 key
+        // 1. 清理系统 Heads-Up entry
         removeSystemHeadsUpEntry(keyToRemove);
 
+        // 2. 清理系统通知视图
+        removeSystemNotificationView(keyToRemove);
+
+        // 3. 清理 rowView 状态
         if (rowViewSnapshot != null) {
             try {
                 XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUp", false);
@@ -809,9 +914,7 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
-        // 【修复 v21】从 StatusBar 彻底移除系统通知视图
-        removeSystemNotificationView(keyToRemove);
-
+        // 4. 移除窗口
         if (mCurrentOverlay != null) {
             try {
                 if (mCurrentOverlay.getParent() != null) {
@@ -824,19 +927,15 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
+        // 5. 更新 dismiss time
         if (keyToRemove != null) {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
 
+        // 6. 清理所有引用（统一在这里，避免重复）
         mCurrentKey = null;
         mCurrentRowView = null;
-
-        cleanupOverlayState();
-    }
-
-    private void cleanupOverlayState() {
         mCurrentOverlay = null;
-        mCurrentKey = null;
         mCurrentContentHash = null;
     }
 }
