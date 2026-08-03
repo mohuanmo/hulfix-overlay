@@ -43,11 +43,12 @@ jobs:
 
     - name: Build Debug APK
       run: |
-        for i in 1 2 3; do
-          gradle assembleDebug --no-daemon --init-script init.gradle --stacktrace && break
-          echo "Build attempt $i failed, retrying in 60s..."
-          sleep 60
-        done
+        gradle assembleDebug --no-daemon --init-script init.gradle --stacktrace
+
+    - name: Verify APK exists
+      run: |
+        ls -la app/build/outputs/apk/debug/
+        test -f app/build/outputs/apk/debug/app-debug.apk
 
     - name: Delete old release
       run: |
