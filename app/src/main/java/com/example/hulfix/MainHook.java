@@ -31,8 +31,8 @@ import java.lang.reflect.Method;
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
     private static final long AUTO_DISMISS_MS = 6000;
-    private static final long COOLDOWN_MS = 3000;          // 【改】从 7000 缩短到 3000
-    private static final long NOTIFICATION_MAX_AGE_MS = 3000; // 【新增】新鲜通知阈值
+    private static final long COOLDOWN_MS = 3000;
+    private static final long NOTIFICATION_MAX_AGE_MS = 3000;
 
     /* ===== 窗口位置 ===== */
     private static final int WIN_X = 1386;
@@ -58,9 +58,12 @@ public class MainHook implements IXposedHookLoadPackage {
     private String mCurrentKey = null;
     private View mCurrentOverlay = null;
     private View mCurrentRowView = null;
-    private String mCurrentContentHash = null;             // 【新增】当前显示内容哈希
+    private String mCurrentContentHash = null;
     private Runnable mAutoDismissRunnable = null;
     private long mLastDismissTime = 0;
+
+    /* ===== 【新增】HeadsUpManager 实例 ===== */
+    private Object mHeadsUpManager = null;
 
     /* ===== 手动动画 Runnable ===== */
     private Runnable mEnterAnimRunnable = null;
@@ -71,7 +74,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v18 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v19 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -79,10 +82,51 @@ public class MainHook implements IXposedHookLoadPackage {
 
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
+        captureHeadsUpManager(lpparam); // 【新增】捕获 HeadsUpManager 实例
     }
 
     /* ================================================================ */
-    /*  【新增】判断通知是否新鲜（3 秒内），防止旧通知借尸还魂            */
+    /*  【新增】捕获 HeadsUpManager 实例                                */
+    /* ================================================================ */
+    private void captureHeadsUpManager(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> headsUpClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.policy.HeadsUpManager",
+                lpparam.classLoader
+            );
+            XposedBridge.hookAllMethods(headsUpClass, "addNotification",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        mHeadsUpManager = param.thisObject;
+                    }
+                }
+            );
+            XposedBridge.log(TAG + ": HeadsUpManager capture hooked");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": HeadsUpManager capture failed: " + t);
+        }
+    }
+
+    /* ================================================================ */
+    /*  【新增】从 HeadsUpManager 中彻底移除通知 Entry                  */
+    /* ================================================================ */
+    private void removeSystemHeadsUpEntry(String key) {
+        if (mHeadsUpManager != null && key != null) {
+            try {
+                XposedHelpers.callMethod(mHeadsUpManager, "removeNotification", key, true);
+                XposedBridge.log(TAG + ": HeadsUp entry removed: " + key);
+            } catch (Throwable t) {
+                try {
+                    XposedHelpers.callMethod(mHeadsUpManager, "removeNotification", key);
+                    XposedBridge.log(TAG + ": HeadsUp entry removed (fallback): " + key);
+                } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    /* ================================================================ */
+    /*  判断通知是否新鲜（3 秒内）                                        */
     /* ================================================================ */
     private boolean isFreshNotification(StatusBarNotification sbn) {
         long age = System.currentTimeMillis() - sbn.getPostTime();
@@ -114,7 +158,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
                             String key = sbn.getKey();
 
-                            // 冷却检测
                             long now = SystemClock.elapsedRealtime();
                             if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
                                 param.setResult(null);
@@ -126,7 +169,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return;
                             }
 
-                            // 【新增】新鲜度过滤：只处理 3 秒内的新通知
                             if (!isFreshNotification(sbn)) {
                                 long age = System.currentTimeMillis() - sbn.getPostTime();
                                 XposedBridge.log(TAG + ": Skip stale in IsVisible, age=" + age + "ms, key=" + key);
@@ -173,16 +215,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         try {
                             boolean animatingAway = (boolean) param.args[0];
-
                             View rowView = (View) param.thisObject;
 
-                            // v17 保护逻辑保留
                             if (mCurrentKey == null && mCurrentRowView == rowView) {
                                 return;
                             }
 
                             if (animatingAway) return;
-
                             if (!isLandscape(rowView)) return;
 
                             StatusBarNotification sbn = getSbnFromRow(rowView);
@@ -203,7 +242,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return;
                             }
 
-                            // 【新增】新鲜度过滤：只处理 3 秒内的新通知
                             if (!isFreshNotification(sbn)) {
                                 long age = System.currentTimeMillis() - sbn.getPostTime();
                                 XposedBridge.log(TAG + ": Skip stale in AnimatingAway, age=" + age + "ms, key=" + key);
@@ -416,6 +454,9 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
+                // 【新增】清理系统可能已创建的 Heads-Up Entry
+                removeSystemHeadsUpEntry(key);
+
                 Notification notification = sbn.getNotification();
                 Bundle extras = notification.extras;
 
@@ -426,7 +467,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 String newContent = title + "|" + content;
                 String newHash = Integer.toHexString(newContent.hashCode());
 
-                // 【新增】内容变化检测
                 if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
                     if (newHash.equals(mCurrentContentHash)) {
                         XposedBridge.log(TAG + ": Same content, skip duplicate, key=" + key);
@@ -519,15 +559,25 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 container.addView(readBtn);
 
-                // ===== 点击跳转 =====
+                // ===== 点击跳转 【修复】传入 ActivityOptions =====
                 PendingIntent contentIntent = notification.contentIntent;
                 container.setOnClickListener(v -> {
                     try {
                         if (contentIntent != null) {
-                            contentIntent.send();
+                            android.app.ActivityOptions opts = android.app.ActivityOptions.makeBasic();
+                            contentIntent.send(null, 0, null, null, null, null, opts.toBundle());
+                            XposedBridge.log(TAG + ": ContentIntent sent with ActivityOptions");
                         }
                     } catch (Exception e) {
-                        XposedBridge.log(TAG + ": PendingIntent send failed: " + e);
+                        XposedBridge.log(TAG + ": PendingIntent with options failed: " + e);
+                        try {
+                            if (contentIntent != null) {
+                                contentIntent.send();
+                                XposedBridge.log(TAG + ": ContentIntent sent (fallback)");
+                            }
+                        } catch (Exception e2) {
+                            XposedBridge.log(TAG + ": PendingIntent fallback failed: " + e2);
+                        }
                     }
                     dismissOverlayAnimated();
                 });
@@ -636,10 +686,8 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 XposedBridge.log(TAG + ": Shown: " + title);
 
-                // 入场动画
                 startEnterAnimation(container);
 
-                // 自动消失
                 mAutoDismissRunnable = () -> dismissOverlayAnimated();
                 mHandler.postDelayed(mAutoDismissRunnable, AUTO_DISMISS_MS);
 
@@ -688,6 +736,9 @@ public class MainHook implements IXposedHookLoadPackage {
             mHandler.removeCallbacks(mAutoDismissRunnable);
             mAutoDismissRunnable = null;
         }
+
+        String keyToRemove = mCurrentKey;
+
         if (mCurrentOverlay != null) {
             try {
                 if (mCurrentOverlay.getParent() != null) {
@@ -699,16 +750,22 @@ public class MainHook implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {}
             }
         }
-        if (mCurrentKey != null) {
+
+        if (keyToRemove != null) {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
+
+        // 【关键】先清空 key，防止 clearSystemHeadsUp 触发 Hook 时重复显示
+        mCurrentKey = null;
+
         clearSystemHeadsUp();
+        removeSystemHeadsUpEntry(keyToRemove);
         cleanupOverlayState();
     }
 
     private void cleanupOverlayState() {
         mCurrentOverlay = null;
         mCurrentKey = null;
-        mCurrentContentHash = null;  // 【新增】清理内容哈希
+        mCurrentContentHash = null;
     }
 }
