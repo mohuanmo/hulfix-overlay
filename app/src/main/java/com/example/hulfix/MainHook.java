@@ -64,6 +64,11 @@ public class MainHook implements IXposedHookLoadPackage {
     private Runnable mAutoDismissRunnable = null;
     private long mLastDismissTime = 0;
 
+    /* ===== 用户主动 dismiss 记录（防止下拉后重新刷新） ===== */
+    private String mUserDismissedKey = null;
+    private long mUserDismissTime = 0;
+    private static final long USER_DISMISS_COOLDOWN_MS = 5000;
+
     /* ===== 系统实例 ===== */
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -81,7 +86,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v22 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v25 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -176,6 +181,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 XposedBridge.log(TAG + ": expandNotificationsPanel, hide overlay only");
                                 hideOverlayOnly();
                             }
+                            mUserDismissedKey = null;
                         }
                     }
                 );
@@ -195,6 +201,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 XposedBridge.log(TAG + ": setExpandedVisible(true), hide overlay only");
                                 hideOverlayOnly();
                             }
+                            mUserDismissedKey = null;
                         }
                     }
                 );
@@ -213,12 +220,37 @@ public class MainHook implements IXposedHookLoadPackage {
                                 XposedBridge.log(TAG + ": makeExpandedVisible, hide overlay only");
                                 hideOverlayOnly();
                             }
+                            mUserDismissedKey = null;
                         }
                     }
                 );
                 XposedBridge.log(TAG + ": hooked makeExpandedVisible");
             } catch (Throwable t) {
                 XposedBridge.log(TAG + ": hook makeExpandedVisible skipped: " + t);
+            }
+
+            // 5. PanelViewController.onTrackingStarted — 用户开始下拉状态栏时立即隐藏 overlay
+            //    这是最早能检测到手势下拉的 hook 点，比 StatusBar 的方法更可靠
+            try {
+                Class<?> panelControllerClass = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.phone.PanelViewController",
+                    lpparam.classLoader
+                );
+                XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStarted",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (mCurrentOverlay != null) {
+                                XposedBridge.log(TAG + ": PanelViewController.onTrackingStarted, hide overlay only");
+                                hideOverlayOnly();
+                            }
+                            mUserDismissedKey = null;
+                        }
+                    }
+                );
+                XposedBridge.log(TAG + ": hooked PanelViewController.onTrackingStarted");
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": hook PanelViewController.onTrackingStarted skipped: " + t);
             }
 
             XposedBridge.log(TAG + ": StatusBar hooks installed");
@@ -358,6 +390,13 @@ public class MainHook implements IXposedHookLoadPackage {
                             String key = sbn.getKey();
 
                             long now = SystemClock.elapsedRealtime();
+                            // 【v25】用户主动 dismiss 后冷却期内不重新创建
+                            if (key.equals(mUserDismissedKey) && (now - mUserDismissTime) < USER_DISMISS_COOLDOWN_MS) {
+                                XposedBridge.log(TAG + ": User dismissed recently, skip: " + key);
+                                param.setResult(null);
+                                return;
+                            }
+
                             if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
                                 param.setResult(null);
                                 return;
@@ -445,6 +484,13 @@ public class MainHook implements IXposedHookLoadPackage {
                             String key = sbn.getKey();
 
                             long now = SystemClock.elapsedRealtime();
+                            // 【v25】用户主动 dismiss 后冷却期内不重新创建
+                            if (key.equals(mUserDismissedKey) && (now - mUserDismissTime) < USER_DISMISS_COOLDOWN_MS) {
+                                XposedBridge.log(TAG + ": User dismissed recently(AnimatingAway), skip: " + key);
+                                param.setResult(null);
+                                return;
+                            }
+
                             if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
                                 param.setResult(null);
                                 return;
@@ -1032,7 +1078,11 @@ public class MainHook implements IXposedHookLoadPackage {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
 
-        // 6. 清理所有引用（统一在这里，避免重复）
+        // 6. 记录用户主动 dismiss，防止系统重新创建 Heads-Up
+        mUserDismissedKey = keyToRemove;
+        mUserDismissTime = SystemClock.elapsedRealtime();
+
+        // 7. 清理所有引用（统一在这里，避免重复）
         mCurrentKey = null;
         mCurrentRowView = null;
         mCurrentOverlay = null;
