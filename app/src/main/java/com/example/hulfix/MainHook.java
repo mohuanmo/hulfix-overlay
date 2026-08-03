@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.service.notification.StatusBarNotification;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -30,6 +31,7 @@ import java.lang.reflect.Method;
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
     private static final long AUTO_DISMISS_MS = 5000;
+    private static final long DEBOUNCE_MS = 3000; // 3秒内同一通知不重复显示
 
     /* ===== 窗口位置 ===== */
     private static final int WIN_X = 1386;
@@ -44,16 +46,17 @@ public class MainHook implements IXposedHookLoadPackage {
     private WindowManager mWindowManager;
     private Handler mHandler;
 
-    /* ===== 单实例：只保留最新一条 ===== */
+    /* ===== 单实例 ===== */
     private String mCurrentKey = null;
     private View mCurrentOverlay = null;
     private Runnable mCurrentDismissRunnable = null;
+    private long mLastShowTime = 0;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v10 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v11 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -73,7 +76,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpIsVisible",
                 new XC_MethodHook() {
                     @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
+                    protected void afterHookedMethod(MethodHookParam param) {
                         try {
                             View rowView = (View) param.thisObject;
                             if (!isLandscape(rowView)) return;
@@ -82,15 +85,10 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (sbn == null) return;
 
                             // 屏蔽指定应用
-                            if (BLOCK_PKG.equals(sbn.getPackageName())) {
-                                XposedBridge.log(TAG + ": Blocked " + BLOCK_PKG);
-                                return;
-                            }
+                            if (BLOCK_PKG.equals(sbn.getPackageName())) return;
 
                             String key = sbn.getKey();
-                            XposedBridge.log(TAG + ": HeadsUpIsVisible triggered, key=" + key);
-
-                            param.setResult(null);
+                            XposedBridge.log(TAG + ": HeadsUpIsVisible after, key=" + key);
 
                             if (mContext == null) {
                                 mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
@@ -100,12 +98,12 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpIsVisible hook error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpIsVisible after error: " + t);
                         }
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible (after)");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": setHeadsUpIsVisible hook failed: " + t);
         }
@@ -121,7 +119,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpAnimatingAway", boolean.class,
                 new XC_MethodHook() {
                     @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
+                    protected void afterHookedMethod(MethodHookParam param) {
                         try {
                             boolean animatingAway = (boolean) param.args[0];
                             if (animatingAway) return;
@@ -132,14 +130,12 @@ public class MainHook implements IXposedHookLoadPackage {
                             StatusBarNotification sbn = getSbnFromRow(rowView);
                             if (sbn == null) return;
 
-                            // 屏蔽指定应用
                             if (BLOCK_PKG.equals(sbn.getPackageName())) return;
 
                             String key = sbn.getKey();
                             if (key.equals(mCurrentKey)) return;
 
-                            XposedBridge.log(TAG + ": AnimatingAway fallback: " + key);
-                            param.setResult(null);
+                            XposedBridge.log(TAG + ": AnimatingAway after, key=" + key);
 
                             if (mContext == null) {
                                 mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
@@ -149,12 +145,12 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway after error: " + t);
                         }
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway (after)");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook failed: " + t);
         }
@@ -194,6 +190,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
         final String key = sbn.getKey();
 
+        // 去重：同一通知 3 秒内不重复显示（解决屏幕开关重复问题）
+        long now = SystemClock.elapsedRealtime();
+        if (key.equals(mCurrentKey) && (now - mLastShowTime) < DEBOUNCE_MS) {
+            XposedBridge.log(TAG + ": Debounced: " + key);
+            return;
+        }
+
         mHandler.post(() -> {
             try {
                 // 单实例：新通知替换旧的
@@ -213,20 +216,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 container.setPadding(20, 14, 20, 14);
                 container.setGravity(Gravity.CENTER_VERTICAL);
 
-                // ===== 毛玻璃效果背景 =====
-                // 外层：半透明深色圆角（模拟毛玻璃边缘的暗化效果）
-                GradientDrawable outerBg = new GradientDrawable();
-                outerBg.setShape(GradientDrawable.RECTANGLE);
-                outerBg.setCornerRadius(28);
-                outerBg.setColor(0xB3FFFFFF); // 70% 白，半透明基底
-                outerBg.setStroke(2, 0x59FFFFFF); // 35% 白描边，形成"玻璃边缘"感
-                container.setBackground(outerBg);
-
-                // 阴影： elevation 产生立体下落阴影
+                // ===== 毛玻璃效果 =====
+                GradientDrawable bg = new GradientDrawable();
+                bg.setShape(GradientDrawable.RECTANGLE);
+                bg.setCornerRadius(28);
+                bg.setColor(0xB3FFFFFF);
+                bg.setStroke(2, 0x59FFFFFF);
+                container.setBackground(bg);
                 container.setElevation(18);
-
-                // 为了更像 iOS 的"厚度"，再加一层内发光感...
-                // 实际上用 padding + 两层背景很难，这里用高 elevation + 半透明背景模拟
 
                 // ===== 图标 =====
                 ImageView iconView = new ImageView(mContext);
@@ -280,9 +277,11 @@ public class MainHook implements IXposedHookLoadPackage {
                     removeCurrentOverlay();
                 });
 
-                // ===== 跟手触摸手势 + 下滑状态栏 =====
+                // ===== 方向锁定滑动 =====
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
+                    boolean isVerticalSwipe = false;
+                    boolean isHorizontalSwipe = false;
 
                     @Override
                     public boolean onTouch(View v, MotionEvent event) {
@@ -290,13 +289,34 @@ public class MainHook implements IXposedHookLoadPackage {
                             case MotionEvent.ACTION_DOWN:
                                 startX = event.getRawX();
                                 startY = event.getRawY();
+                                isVerticalSwipe = false;
+                                isHorizontalSwipe = false;
                                 return true;
 
                             case MotionEvent.ACTION_MOVE:
                                 float dx = event.getRawX() - startX;
                                 float dy = event.getRawY() - startY;
-                                v.setTranslationX(dx);
-                                v.setTranslationY(dy);
+
+                                // 方向锁定：一旦确定主方向，就只沿该方向移动
+                                if (!isVerticalSwipe && !isHorizontalSwipe) {
+                                    if (Math.abs(dy) > 20) {
+                                        isVerticalSwipe = true;
+                                    } else if (Math.abs(dx) > 20) {
+                                        isHorizontalSwipe = true;
+                                    }
+                                }
+
+                                if (isVerticalSwipe) {
+                                    // 垂直滑动：只动 Y，X 锁定为 0
+                                    v.setTranslationX(0);
+                                    v.setTranslationY(dy);
+                                } else if (isHorizontalSwipe) {
+                                    // 水平滑动：只动 X，Y 锁定为 0
+                                    v.setTranslationX(dx);
+                                    v.setTranslationY(0);
+                                }
+
+                                // 透明度随距离
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 float alpha = Math.max(0.5f, 1f - dist / 300f);
                                 v.setAlpha(alpha);
@@ -305,24 +325,24 @@ public class MainHook implements IXposedHookLoadPackage {
                             case MotionEvent.ACTION_UP:
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
-                                boolean isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
 
-                                // 上滑销毁
-                                if (totalDy < -100 && !isHorizontal) {
+                                // 上滑销毁（垂直方向）
+                                if (isVerticalSwipe && totalDy < -100) {
                                     removeCurrentOverlay();
                                     return true;
                                 }
-                                // 左滑销毁
-                                if (totalDx < -100 && isHorizontal) {
+                                // 左滑销毁（水平方向）
+                                if (isHorizontalSwipe && totalDx < -100) {
                                     removeCurrentOverlay();
                                     return true;
                                 }
-                                // 下滑：展开状态栏 + 销毁
-                                if (totalDy > 150 && !isHorizontal) {
+                                // 下滑：展开状态栏 + 销毁（垂直方向）
+                                if (isVerticalSwipe && totalDy > 150) {
                                     expandStatusBar();
                                     removeCurrentOverlay();
                                     return true;
                                 }
+
                                 // 未超阈值：回弹
                                 v.animate()
                                     .translationX(0)
@@ -337,14 +357,15 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-                // ===== 窗口参数 =====
+                // ===== 窗口参数：最高层级 + 不限制布局 =====
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WIN_W,
                     WIN_H,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT
                 );
                 params.gravity = Gravity.TOP | Gravity.LEFT;
@@ -354,6 +375,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 mWindowManager.addView(container, params);
                 mCurrentKey = key;
                 mCurrentOverlay = container;
+                mLastShowTime = SystemClock.elapsedRealtime();
 
                 XposedBridge.log(TAG + ": Shown: " + title);
 
