@@ -31,13 +31,17 @@ import java.lang.reflect.Method;
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
     private static final long AUTO_DISMISS_MS = 5000;
-    private static final long DEBOUNCE_MS = 3000; // 3秒内同一通知不重复显示
+    private static final long DEBOUNCE_MS = 3000;
 
     /* ===== 窗口位置 ===== */
     private static final int WIN_X = 1386;
     private static final int WIN_Y = 77;
     private static final int WIN_W = 673;
     private static final int WIN_H = 119;
+
+    /* ===== 手势阈值 ===== */
+    private static final float SWIPE_DESTROY_THRESHOLD = 80f;
+    private static final float PULLDOWN_THRESHOLD = 120f;
 
     /* ===== 屏蔽列表 ===== */
     private static final String BLOCK_PKG = "com.omarea.vtools";
@@ -56,7 +60,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v11 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v12 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -66,6 +70,9 @@ public class MainHook implements IXposedHookLoadPackage {
         hookAnimatingAway(lpparam);
     }
 
+    /* ================================================================ */
+    /*  Hook 1：系统要显示 Heads-Up 时，阻止系统显示，我们自己显示     */
+    /* ================================================================ */
     private void hookHeadsUpIsVisible(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> rowClass = XposedHelpers.findClass(
@@ -76,7 +83,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpIsVisible",
                 new XC_MethodHook() {
                     @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
+                    protected void beforeHookedMethod(MethodHookParam param) {
                         try {
                             View rowView = (View) param.thisObject;
                             if (!isLandscape(rowView)) return;
@@ -85,10 +92,16 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (sbn == null) return;
 
                             // 屏蔽指定应用
-                            if (BLOCK_PKG.equals(sbn.getPackageName())) return;
+                            if (BLOCK_PKG.equals(sbn.getPackageName())) {
+                                XposedBridge.log(TAG + ": Blocked " + BLOCK_PKG);
+                                return;
+                            }
 
                             String key = sbn.getKey();
-                            XposedBridge.log(TAG + ": HeadsUpIsVisible after, key=" + key);
+                            XposedBridge.log(TAG + ": HeadsUpIsVisible before, key=" + key);
+
+                            // 【关键】阻止系统自己显示 Heads-Up
+                            param.setResult(null);
 
                             if (mContext == null) {
                                 mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
@@ -98,17 +111,20 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpIsVisible after error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpIsVisible before error: " + t);
                         }
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible (after)");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible (before)");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": setHeadsUpIsVisible hook failed: " + t);
         }
     }
 
+    /* ================================================================ */
+    /*  Hook 2：兜底触发                                               */
+    /* ================================================================ */
     private void hookAnimatingAway(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> rowClass = XposedHelpers.findClass(
@@ -119,7 +135,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpAnimatingAway", boolean.class,
                 new XC_MethodHook() {
                     @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
+                    protected void beforeHookedMethod(MethodHookParam param) {
                         try {
                             boolean animatingAway = (boolean) param.args[0];
                             if (animatingAway) return;
@@ -135,7 +151,9 @@ public class MainHook implements IXposedHookLoadPackage {
                             String key = sbn.getKey();
                             if (key.equals(mCurrentKey)) return;
 
-                            XposedBridge.log(TAG + ": AnimatingAway after, key=" + key);
+                            XposedBridge.log(TAG + ": AnimatingAway before, key=" + key);
+
+                            param.setResult(null);
 
                             if (mContext == null) {
                                 mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
@@ -145,12 +163,12 @@ public class MainHook implements IXposedHookLoadPackage {
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
-                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway after error: " + t);
+                            XposedBridge.log(TAG + ": setHeadsUpAnimatingAway before error: " + t);
                         }
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway (after)");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway (before)");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook failed: " + t);
         }
@@ -182,6 +200,9 @@ public class MainHook implements IXposedHookLoadPackage {
             == Configuration.ORIENTATION_LANDSCAPE;
     }
 
+    /* ================================================================ */
+    /*  显示自定义 Heads-Up 悬浮窗                                      */
+    /* ================================================================ */
     private void showCustomHeadsUp(StatusBarNotification sbn) {
         if (mContext == null || mWindowManager == null) return;
         if (mHandler == null) {
@@ -190,7 +211,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         final String key = sbn.getKey();
 
-        // 去重：同一通知 3 秒内不重复显示（解决屏幕开关重复问题）
+        // 去重：同一通知 3 秒内不重复显示
         long now = SystemClock.elapsedRealtime();
         if (key.equals(mCurrentKey) && (now - mLastShowTime) < DEBOUNCE_MS) {
             XposedBridge.log(TAG + ": Debounced: " + key);
@@ -277,11 +298,9 @@ public class MainHook implements IXposedHookLoadPackage {
                     removeCurrentOverlay();
                 });
 
-                // ===== 方向锁定滑动 =====
+                // ===== 跟手触摸手势（任意方向移动，UP时根据主导方向判定） =====
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
-                    boolean isVerticalSwipe = false;
-                    boolean isHorizontalSwipe = false;
 
                     @Override
                     public boolean onTouch(View v, MotionEvent event) {
@@ -289,34 +308,15 @@ public class MainHook implements IXposedHookLoadPackage {
                             case MotionEvent.ACTION_DOWN:
                                 startX = event.getRawX();
                                 startY = event.getRawY();
-                                isVerticalSwipe = false;
-                                isHorizontalSwipe = false;
                                 return true;
 
                             case MotionEvent.ACTION_MOVE:
+                                // 【修复】任意方向跟手移动，不锁定方向
                                 float dx = event.getRawX() - startX;
                                 float dy = event.getRawY() - startY;
-
-                                // 方向锁定：一旦确定主方向，就只沿该方向移动
-                                if (!isVerticalSwipe && !isHorizontalSwipe) {
-                                    if (Math.abs(dy) > 20) {
-                                        isVerticalSwipe = true;
-                                    } else if (Math.abs(dx) > 20) {
-                                        isHorizontalSwipe = true;
-                                    }
-                                }
-
-                                if (isVerticalSwipe) {
-                                    // 垂直滑动：只动 Y，X 锁定为 0
-                                    v.setTranslationX(0);
-                                    v.setTranslationY(dy);
-                                } else if (isHorizontalSwipe) {
-                                    // 水平滑动：只动 X，Y 锁定为 0
-                                    v.setTranslationX(dx);
-                                    v.setTranslationY(0);
-                                }
-
-                                // 透明度随距离
+                                v.setTranslationX(dx);
+                                v.setTranslationY(dy);
+                                // 距离越远越透明
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 float alpha = Math.max(0.5f, 1f - dist / 300f);
                                 v.setAlpha(alpha);
@@ -326,23 +326,30 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
 
-                                // 上滑销毁（垂直方向）
-                                if (isVerticalSwipe && totalDy < -100) {
+                                // 【修复】根据主导方向判定，不依赖MOVE阶段的方向锁定
+                                boolean isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
+
+                                // 上滑销毁
+                                if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
                                     removeCurrentOverlay();
                                     return true;
                                 }
-                                // 左滑销毁（水平方向）
-                                if (isHorizontalSwipe && totalDx < -100) {
+                                // 左滑销毁
+                                if (totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     removeCurrentOverlay();
                                     return true;
                                 }
-                                // 下滑：展开状态栏 + 销毁（垂直方向）
-                                if (isVerticalSwipe && totalDy > 150) {
+                                // 右滑销毁（新增）
+                                if (totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
+                                    removeCurrentOverlay();
+                                    return true;
+                                }
+                                // 下滑：展开状态栏 + 销毁
+                                if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar();
                                     removeCurrentOverlay();
                                     return true;
                                 }
-
                                 // 未超阈值：回弹
                                 v.animate()
                                     .translationX(0)
@@ -357,7 +364,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-                // ===== 窗口参数：最高层级 + 不限制布局 =====
+                // ===== 窗口参数：最高层级 =====
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WIN_W,
                     WIN_H,
