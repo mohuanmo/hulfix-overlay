@@ -47,10 +47,6 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ===== 屏蔽列表 ===== */
     private static final String BLOCK_PKG = "com.omarea.vtools";
 
-    /* ===== 窗口类型：使用 TYPE_STATUS_BAR_SUB_PANEL (2017) =====
-     * 该类型明确显示在 TYPE_STATUS_BAR_PANEL (2014, 系统 Heads-Up 用) 之上
-     * 在 SystemUI 进程中有权限使用
-     */
     private static final int WINDOW_TYPE = 2017; // TYPE_STATUS_BAR_SUB_PANEL
 
     private Context mContext;
@@ -60,6 +56,7 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ===== 单实例 ===== */
     private String mCurrentKey = null;
     private View mCurrentOverlay = null;
+    private View mCurrentRowView = null; // 系统原始 rowView
     private Runnable mAutoDismissRunnable = null;
     private long mLastDismissTime = 0;
 
@@ -72,7 +69,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v16 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v17 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -127,6 +124,9 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
                             }
 
+                            // 保存系统 rowView，销毁时需要清理
+                            mCurrentRowView = rowView;
+
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
@@ -157,9 +157,16 @@ public class MainHook implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) {
                         try {
                             boolean animatingAway = (boolean) param.args[0];
-                            if (animatingAway) return;
 
                             View rowView = (View) param.thisObject;
+
+                            // 【保护】如果系统正在清理我们已销毁的通知，不阻止也不显示
+                            if (mCurrentKey == null && mCurrentRowView == rowView) {
+                                return; // 让系统正常执行清理
+                            }
+
+                            if (animatingAway) return;
+
                             if (!isLandscape(rowView)) return;
 
                             StatusBarNotification sbn = getSbnFromRow(rowView);
@@ -187,6 +194,8 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
                                 mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
                             }
+
+                            mCurrentRowView = rowView;
 
                             showCustomHeadsUp(sbn);
 
@@ -226,6 +235,26 @@ public class MainHook implements IXposedHookLoadPackage {
     private boolean isLandscape(View view) {
         return view.getResources().getConfiguration().orientation
             == Configuration.ORIENTATION_LANDSCAPE;
+    }
+
+    /* ================================================================ */
+    /*  清理系统 Heads-Up 状态                                          */
+    /* ================================================================ */
+    private void clearSystemHeadsUp() {
+        if (mCurrentRowView != null) {
+            try {
+                // 强制关闭 Heads-Up 状态，清理系统内部管理器
+                XposedHelpers.callMethod(mCurrentRowView, "setHeadsUp", false);
+                XposedBridge.log(TAG + ": setHeadsUp(false) called");
+            } catch (Throwable t1) {
+                try {
+                    // 备选：触发退出动画流程
+                    XposedHelpers.callMethod(mCurrentRowView, "setHeadsUpAnimatingAway", true);
+                    XposedBridge.log(TAG + ": setHeadsUpAnimatingAway(true) called");
+                } catch (Throwable ignored) {}
+            }
+            mCurrentRowView = null;
+        }
     }
 
     /* ================================================================ */
@@ -552,11 +581,11 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-                // ===== 窗口参数：使用 TYPE_STATUS_BAR_SUB_PANEL 确保在系统 Heads-Up 之上 =====
+                // ===== 窗口参数 =====
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WIN_W,
                     WIN_H,
-                    WINDOW_TYPE, // 2017 = TYPE_STATUS_BAR_SUB_PANEL
+                    WINDOW_TYPE,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -609,7 +638,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 mAutoDismissRunnable = null;
             }
             if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
-                cleanupOverlayState();
+                removeOverlayImmediate();
                 return;
             }
             startExitAnimation(mCurrentOverlay, () -> {
@@ -639,6 +668,8 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mCurrentKey != null) {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
+        // 【关键】清理系统 Heads-Up 状态，防止留下幽灵通知
+        clearSystemHeadsUp();
         cleanupOverlayState();
     }
 
