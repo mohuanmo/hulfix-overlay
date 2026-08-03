@@ -46,6 +46,9 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float SWIPE_DESTROY_THRESHOLD = 70f;
     private static final float PULLDOWN_THRESHOLD = 120f;
     private static final float DIRECTION_LOCK_SLOP = 25f;
+    private static final float MIN_FLING_VELOCITY = 200f;
+    private static final long SHIELD_DELAY_MS = 400;
+    private static final float SWIPE_INTENT_THRESHOLD = 40f;
 
     /* ===== 屏蔽列表 ===== */
     private static final String BLOCK_PKG = "com.omarea.vtools";
@@ -81,6 +84,14 @@ public class MainHook implements IXposedHookLoadPackage {
     private Runnable mEnterAnimRunnable = null;
     private Runnable mExitAnimRunnable = null;
     private Runnable mBounceAnimRunnable = null;
+
+    /* ===== 手势追踪（防误判） ===== */
+    private float mTouchMaxDx = 0f;
+    private float mTouchMaxDy = 0f;
+    private android.view.VelocityTracker mVelocityTracker = null;
+
+    /* ===== 状态栏展开标志 ===== */
+    private boolean mIsPanelExpanded = false;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -177,11 +188,11 @@ public class MainHook implements IXposedHookLoadPackage {
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
+                            mIsPanelExpanded = true;
                             if (mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": expandNotificationsPanel, hide overlay only");
-                                hideOverlayOnly();
+                                XposedBridge.log(TAG + ": expandNotificationsPanel, remove overlay immediately");
+                                removeOverlayImmediate(); // 【v26】彻底清理，防止残留
                             }
-                            mUserDismissedKey = null;
                         }
                     }
                 );
@@ -197,11 +208,11 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
                             boolean visible = (boolean) param.args[0];
+                            mIsPanelExpanded = visible;
                             if (visible && mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": setExpandedVisible(true), hide overlay only");
-                                hideOverlayOnly();
+                                XposedBridge.log(TAG + ": setExpandedVisible(true), remove overlay immediately");
+                                removeOverlayImmediate(); // 【v26】彻底清理
                             }
-                            mUserDismissedKey = null;
                         }
                     }
                 );
@@ -216,11 +227,11 @@ public class MainHook implements IXposedHookLoadPackage {
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
+                            mIsPanelExpanded = true;
                             if (mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": makeExpandedVisible, hide overlay only");
-                                hideOverlayOnly();
+                                XposedBridge.log(TAG + ": makeExpandedVisible, remove overlay immediately");
+                                removeOverlayImmediate(); // 【v26】彻底清理
                             }
-                            mUserDismissedKey = null;
                         }
                     }
                 );
@@ -240,17 +251,33 @@ public class MainHook implements IXposedHookLoadPackage {
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
+                            mIsPanelExpanded = true;
                             if (mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": PanelViewController.onTrackingStarted, hide overlay only");
-                                hideOverlayOnly();
+                                XposedBridge.log(TAG + ": PanelViewController.onTrackingStarted, remove overlay immediately");
+                                removeOverlayImmediate(); // 【v26】彻底清理
                             }
-                            mUserDismissedKey = null;
                         }
                     }
                 );
                 XposedBridge.log(TAG + ": hooked PanelViewController.onTrackingStarted");
             } catch (Throwable t) {
                 XposedBridge.log(TAG + ": hook PanelViewController.onTrackingStarted skipped: " + t);
+            }
+
+            // 6. onTrackingStopped — 用户停止下拉时重置标志
+            try {
+                XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStopped",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            mIsPanelExpanded = false;
+                            XposedBridge.log(TAG + ": PanelViewController.onTrackingStopped, panel collapsed");
+                        }
+                    }
+                );
+                XposedBridge.log(TAG + ": hooked PanelViewController.onTrackingStopped");
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": hook PanelViewController.onTrackingStopped skipped: " + t);
             }
 
             XposedBridge.log(TAG + ": StatusBar hooks installed");
@@ -281,11 +308,49 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ================================================================ */
     private void removeSystemNotificationView(String key) {
         if (mStatusBar != null && key != null) {
+            // 尝试多种 AOSP 13 可能的签名
+            boolean removed = false;
+            // 1. 双参数 (String, NotificationVisibility)
             try {
-                XposedHelpers.callMethod(mStatusBar, "removeNotification", key);
-                XposedBridge.log(TAG + ": StatusBar notification removed: " + key);
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": StatusBar removeNotification failed: " + t);
+                Class<?> nvClass = XposedHelpers.findClass(
+                    "android.service.notification.NotificationVisibility",
+                    mStatusBar.getClass().getClassLoader()
+                );
+                Object nv = XposedHelpers.callStaticMethod(nvClass, "obtain",
+                    key, 0, 0, false);
+                XposedHelpers.callMethod(mStatusBar, "removeNotification", key, nv);
+                XposedBridge.log(TAG + ": StatusBar notification removed(via NV): " + key);
+                removed = true;
+            } catch (Throwable t1) {
+                // 2. 单参数 fallback
+                try {
+                    XposedHelpers.callMethod(mStatusBar, "removeNotification", key);
+                    XposedBridge.log(TAG + ": StatusBar notification removed(single): " + key);
+                    removed = true;
+                } catch (Throwable t2) {
+                    // 3. 通过 NotificationPresenter
+                    try {
+                        Object presenter = XposedHelpers.getObjectField(mStatusBar, "mPresenter");
+                        if (presenter != null) {
+                            XposedHelpers.callMethod(presenter, "removeNotification", key);
+                            XposedBridge.log(TAG + ": StatusBar notification removed(via presenter): " + key);
+                            removed = true;
+                        }
+                    } catch (Throwable t3) {
+                        // 4. 通过 NotificationEntryManager
+                        try {
+                            Object entryManager = XposedHelpers.getObjectField(mStatusBar, "mEntryManager");
+                            if (entryManager != null) {
+                                XposedHelpers.callMethod(entryManager, "removeNotification", key);
+                                XposedBridge.log(TAG + ": StatusBar notification removed(via entryManager): " + key);
+                                removed = true;
+                            }
+                        } catch (Throwable t4) {}
+                    }
+                }
+            }
+            if (!removed) {
+                XposedBridge.log(TAG + ": StatusBar removeNotification all attempts failed for: " + key);
             }
         }
     }
@@ -315,6 +380,7 @@ public class MainHook implements IXposedHookLoadPackage {
     /*  【v22 新增】判断状态栏是否已展开                                */
     /* ================================================================ */
     private boolean isStatusBarExpanded() {
+        if (mIsPanelExpanded) return true;
         if (mStatusBar == null) return false;
         try {
             return (boolean) XposedHelpers.getBooleanField(mStatusBar, "mExpandedVisible");
@@ -814,6 +880,13 @@ public class MainHook implements IXposedHookLoadPackage {
                                 startY = event.getRawY();
                                 lockedHorizontal = false;
                                 lockedVertical = false;
+                                mTouchMaxDx = 0f;
+                                mTouchMaxDy = 0f;
+                                if (mVelocityTracker != null) {
+                                    mVelocityTracker.recycle();
+                                }
+                                mVelocityTracker = android.view.VelocityTracker.obtain();
+                                mVelocityTracker.addMovement(event);
                                 return true;
 
                             case MotionEvent.ACTION_MOVE:
@@ -828,6 +901,13 @@ public class MainHook implements IXposedHookLoadPackage {
                                             lockedVertical = true;
                                         }
                                     }
+                                }
+
+                                // 【v26 修复】记录最大位移和速度，用于区分滑动意图 vs 点击
+                                mTouchMaxDx = Math.max(mTouchMaxDx, Math.abs(dx));
+                                mTouchMaxDy = Math.max(mTouchMaxDy, Math.abs(dy));
+                                if (mVelocityTracker != null) {
+                                    mVelocityTracker.addMovement(event);
                                 }
 
                                 if (lockedHorizontal) {
@@ -850,6 +930,17 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
 
+                                // 计算离开速度
+                                float velocityX = 0f, velocityY = 0f;
+                                if (mVelocityTracker != null) {
+                                    mVelocityTracker.addMovement(event);
+                                    mVelocityTracker.computeCurrentVelocity(1000);
+                                    velocityX = mVelocityTracker.getXVelocity();
+                                    velocityY = mVelocityTracker.getYVelocity();
+                                    mVelocityTracker.recycle();
+                                    mVelocityTracker = null;
+                                }
+
                                 boolean isHorizontal;
                                 if (lockedHorizontal) {
                                     isHorizontal = true;
@@ -859,7 +950,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
                                 }
 
-                                // 滑动手势判断
+                                // 滑动手势判断（使用终点位移）
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
                                     dismissOverlayAnimated();
                                     return true;
@@ -874,11 +965,27 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar();
-                                    hideOverlayOnly();
+                                    removeOverlayImmediate(); // 【v26】彻底清理，防止重复弹出
                                     return true;
                                 }
 
-                                // 不是滑动手势，视为点击，执行跳转
+                                // 【v26 修复】用最大位移 + 离开速度判断用户是否有滑动意图
+                                // 避免"滑出去又滑回来"被误判为点击
+                                boolean hasSwipeIntent = (mTouchMaxDx > SWIPE_INTENT_THRESHOLD)
+                                    || (mTouchMaxDy > SWIPE_INTENT_THRESHOLD);
+                                boolean isFastFling = (Math.abs(velocityX) > MIN_FLING_VELOCITY)
+                                    || (Math.abs(velocityY) > MIN_FLING_VELOCITY);
+
+                                if (hasSwipeIntent || isFastFling) {
+                                    // 用户确实想滑动，只是回弹了 → 回弹动画，不跳转
+                                    XposedBridge.log(TAG + ": Swipe intent detected (maxDx=" + mTouchMaxDx
+                                        + ", maxDy=" + mTouchMaxDy + ", vx=" + velocityX + ", vy=" + velocityY
+                                        + "), bounce back");
+                                    startBounceAnimation(v);
+                                    return true;
+                                }
+
+                                // 真正的点击（位移小 + 速度慢）
                                 if (Math.abs(totalDx) < SWIPE_DESTROY_THRESHOLD && Math.abs(totalDy) < SWIPE_DESTROY_THRESHOLD) {
                                     performContentClick(contentIntent);
                                     dismissOverlayAnimated();
@@ -1042,11 +1149,12 @@ public class MainHook implements IXposedHookLoadPackage {
 
         String keyToRemove = mCurrentKey;
         View rowViewSnapshot = mCurrentRowView;
+        final View overlayToShield = mCurrentOverlay; // 【v26】透明盾牌引用
 
         // 1. 清理系统 Heads-Up entry
         removeSystemHeadsUpEntry(keyToRemove);
 
-        // 2. 清理系统通知视图
+        // 2. 清理系统通知视图（尝试多种签名）
         removeSystemNotificationView(keyToRemove);
 
         // 3. 清理 rowView 状态
@@ -1060,17 +1168,26 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
-        // 4. 移除窗口
-        if (mCurrentOverlay != null) {
+        // 4. 【v26 修复】透明盾牌：延迟移除窗口，防止触摸落到系统残留通知
+        //    LineageOS 20 GSI 横屏下系统通知渲染损坏但触摸管道完好，
+        //    立即 removeView 后点击原位置会触发系统通知的 PendingIntent。
+        //    保持透明窗口 400ms 拦截触摸，同时立即清空引用让新通知可创建。
+        if (overlayToShield != null) {
             try {
-                if (mCurrentOverlay.getParent() != null) {
-                    mWindowManager.removeView(mCurrentOverlay);
-                }
-            } catch (Throwable t) {
+                overlayToShield.setAlpha(0f);
+                overlayToShield.setOnTouchListener((v, event) -> true); // 消费所有触摸
+            } catch (Throwable ignored) {}
+            mHandler.postDelayed(() -> {
                 try {
-                    mWindowManager.removeViewImmediate(mCurrentOverlay);
-                } catch (Throwable ignored) {}
-            }
+                    if (overlayToShield.getParent() != null) {
+                        mWindowManager.removeView(overlayToShield);
+                    }
+                } catch (Throwable t) {
+                    try {
+                        mWindowManager.removeViewImmediate(overlayToShield);
+                    } catch (Throwable ignored) {}
+                }
+            }, SHIELD_DELAY_MS);
         }
 
         // 5. 更新 dismiss time
@@ -1082,7 +1199,7 @@ public class MainHook implements IXposedHookLoadPackage {
         mUserDismissedKey = keyToRemove;
         mUserDismissTime = SystemClock.elapsedRealtime();
 
-        // 7. 清理所有引用（统一在这里，避免重复）
+        // 7. 立即清空引用（新通知可以正常创建，透明盾牌用局部变量保持）
         mCurrentKey = null;
         mCurrentRowView = null;
         mCurrentOverlay = null;
