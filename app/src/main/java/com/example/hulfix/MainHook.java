@@ -65,6 +65,9 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ===== 【新增】HeadsUpManager 实例 ===== */
     private Object mHeadsUpManager = null;
 
+    /* ===== 【新增】StatusBar 实例（用于彻底移除系统通知） ===== */
+    private Object mStatusBar = null;
+
     /* ===== 手动动画 Runnable ===== */
     private Runnable mEnterAnimRunnable = null;
     private Runnable mExitAnimRunnable = null;
@@ -74,7 +77,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v20 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v21 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -82,7 +85,8 @@ public class MainHook implements IXposedHookLoadPackage {
 
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
-        captureHeadsUpManager(lpparam); // 【新增】捕获 HeadsUpManager 实例
+        captureHeadsUpManager(lpparam);
+        captureStatusBar(lpparam);
     }
 
     /* ================================================================ */
@@ -109,18 +113,55 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
+    /*  【新增】捕获 StatusBar 实例（用于彻底移除系统通知视图）        */
+    /* ================================================================ */
+    private void captureStatusBar(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> statusBarClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.StatusBar",
+                lpparam.classLoader
+            );
+            XposedBridge.hookAllMethods(statusBarClass, "addNotification",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        mStatusBar = param.thisObject;
+                    }
+                }
+            );
+            XposedBridge.log(TAG + ": StatusBar capture hooked");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": StatusBar capture failed: " + t);
+        }
+    }
+
+    /* ================================================================ */
     /*  【新增】从 HeadsUpManager 中彻底移除通知 Entry                  */
     /* ================================================================ */
     private void removeSystemHeadsUpEntry(String key) {
         if (mHeadsUpManager != null && key != null) {
             try {
                 XposedHelpers.callMethod(mHeadsUpManager, "removeNotification", key, true);
-                XposedBridge.log(TAG + ": HeadsUp entry removed: " + key);
+                XposedBridge.log(TAG + ": HeadsUp entry removed(true): " + key);
             } catch (Throwable t) {
                 try {
                     XposedHelpers.callMethod(mHeadsUpManager, "removeNotification", key);
-                    XposedBridge.log(TAG + ": HeadsUp entry removed (fallback): " + key);
+                    XposedBridge.log(TAG + ": HeadsUp entry removed(fallback): " + key);
                 } catch (Throwable ignored) {}
+            }
+        }
+    }
+
+    /* ================================================================ */
+    /*  【新增】从 StatusBar 彻底移除通知视图                           */
+    /* ================================================================ */
+    private void removeSystemNotificationView(String key) {
+        if (mStatusBar != null && key != null) {
+            try {
+                XposedHelpers.callMethod(mStatusBar, "removeNotification", key);
+                XposedBridge.log(TAG + ": StatusBar notification removed: " + key);
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": StatusBar removeNotification failed: " + t);
             }
         }
     }
@@ -459,13 +500,13 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         final String key = sbn.getKey();
+        final Notification notification = sbn.getNotification();
+        final PendingIntent contentIntent = notification.contentIntent;
 
         mHandler.post(() -> {
             try {
-                // 【新增】清理系统可能已创建的 Heads-Up Entry
                 removeSystemHeadsUpEntry(key);
 
-                Notification notification = sbn.getNotification();
                 Bundle extras = notification.extras;
 
                 String title = extras.getString(Notification.EXTRA_TITLE, "");
@@ -567,32 +608,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 container.addView(readBtn);
 
-                // ===== 点击跳转 【修复 v20】使用 send(Bundle) 重载 =====
-                PendingIntent contentIntent = notification.contentIntent;
-                container.setOnClickListener(v -> {
-                    try {
-                        if (contentIntent != null) {
-                            android.app.ActivityOptions opts = android.app.ActivityOptions.makeBasic();
-                            // 【修复 v20】使用 send(Bundle) 重载，避免 Context 为 null 的问题
-                            contentIntent.send(opts.toBundle());
-                            XposedBridge.log(TAG + ": ContentIntent sent with ActivityOptions");
-                        }
-                    } catch (Exception e) {
-                        XposedBridge.log(TAG + ": PendingIntent with options failed: " + e);
-                        try {
-                            if (contentIntent != null) {
-                                // 终极 fallback：使用 mContext 启动
-                                contentIntent.send(mContext, 0, null);
-                                XposedBridge.log(TAG + ": ContentIntent sent with mContext fallback");
-                            }
-                        } catch (Exception e2) {
-                            XposedBridge.log(TAG + ": PendingIntent all fallbacks failed: " + e2);
-                        }
-                    }
-                    dismissOverlayAnimated();
-                });
-
-                // ===== 方向锁定滑动 =====
+                // ===== 方向锁定滑动 + 点击跳转（【修复 v21】合并到 onTouch 中）=====
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
                     boolean lockedHorizontal = false;
@@ -651,6 +667,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
                                 }
 
+                                // 【修复 v21】滑动手势判断
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
                                     dismissOverlayAnimated();
                                     return true;
@@ -668,6 +685,14 @@ public class MainHook implements IXposedHookLoadPackage {
                                     dismissOverlayAnimated();
                                     return true;
                                 }
+
+                                // 【修复 v21】不是滑动手势，视为点击，直接执行跳转
+                                if (Math.abs(totalDx) < SWIPE_DESTROY_THRESHOLD && Math.abs(totalDy) < SWIPE_DESTROY_THRESHOLD) {
+                                    performContentClick(contentIntent);
+                                    dismissOverlayAnimated();
+                                    return true;
+                                }
+
                                 startBounceAnimation(v);
                                 return true;
                         }
@@ -705,6 +730,27 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log(TAG + ": showCustomHeadsUp error: " + t);
             }
         });
+    }
+
+    /* ================================================================ */
+    /*  【修复 v21】点击跳转逻辑抽离为独立方法                          */
+    /* ================================================================ */
+    private void performContentClick(PendingIntent contentIntent) {
+        if (contentIntent == null) return;
+        try {
+            // 方案1: 直接 send()，和已读按钮一样
+            contentIntent.send();
+            XposedBridge.log(TAG + ": ContentIntent sent (direct)");
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": ContentIntent direct send failed: " + e);
+            try {
+                // 方案2: 使用 mContext 启动
+                contentIntent.send(mContext, 0, null);
+                XposedBridge.log(TAG + ": ContentIntent sent with mContext");
+            } catch (Exception e2) {
+                XposedBridge.log(TAG + ": ContentIntent all failed: " + e2);
+            }
+        }
     }
 
     /* ===== 展开状态栏 ===== */
@@ -751,7 +797,6 @@ public class MainHook implements IXposedHookLoadPackage {
         View rowViewSnapshot = mCurrentRowView;
 
         // 【修复 v20】先彻底清理系统 Heads-Up，再清空 key
-        // 这样在 Hook 触发时 mCurrentKey 仍有值，能继续拦截系统显示
         removeSystemHeadsUpEntry(keyToRemove);
 
         if (rowViewSnapshot != null) {
@@ -763,6 +808,9 @@ public class MainHook implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {}
             }
         }
+
+        // 【修复 v21】从 StatusBar 彻底移除系统通知视图
+        removeSystemNotificationView(keyToRemove);
 
         if (mCurrentOverlay != null) {
             try {
@@ -780,7 +828,6 @@ public class MainHook implements IXposedHookLoadPackage {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
 
-        // 现在安全地清空 key
         mCurrentKey = null;
         mCurrentRowView = null;
 
