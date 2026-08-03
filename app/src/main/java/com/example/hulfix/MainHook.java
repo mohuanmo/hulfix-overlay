@@ -1,5 +1,6 @@
 package com.example.hulfix;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.Context;
@@ -55,12 +56,13 @@ public class MainHook implements IXposedHookLoadPackage {
     private View mCurrentOverlay = null;
     private Runnable mCurrentDismissRunnable = null;
     private long mLastShowTime = 0;
+    private boolean mIsDismissing = false;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v12 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v13 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -68,6 +70,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
+        hookStatusBarExpand(lpparam);
     }
 
     /* ================================================================ */
@@ -100,7 +103,6 @@ public class MainHook implements IXposedHookLoadPackage {
                             String key = sbn.getKey();
                             XposedBridge.log(TAG + ": HeadsUpIsVisible before, key=" + key);
 
-                            // 【关键】阻止系统自己显示 Heads-Up
                             param.setResult(null);
 
                             if (mContext == null) {
@@ -116,7 +118,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible (before)");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpIsVisible");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": setHeadsUpIsVisible hook failed: " + t);
         }
@@ -168,9 +170,53 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 }
             );
-            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway (before)");
+            XposedBridge.log(TAG + ": Hooked setHeadsUpAnimatingAway");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook failed: " + t);
+        }
+    }
+
+    /* ================================================================ */
+    /*  Hook 3：下拉通知栏时自动关闭悬浮窗                             */
+    /* ================================================================ */
+    private void hookStatusBarExpand(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 尝试 Hook StatusBar.makeExpandedVisible
+        try {
+            Class<?> statusBarClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.StatusBar",
+                lpparam.classLoader
+            );
+            XposedHelpers.findAndHookMethod(statusBarClass, "makeExpandedVisible",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        removeCurrentOverlay();
+                    }
+                }
+            );
+            XposedBridge.log(TAG + ": Hooked StatusBar.makeExpandedVisible");
+            return;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": makeExpandedVisible not found, trying expandNotificationsPanel");
+        }
+
+        // 备用：Hook expandNotificationsPanel
+        try {
+            Class<?> statusBarClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.StatusBar",
+                lpparam.classLoader
+            );
+            XposedHelpers.findAndHookMethod(statusBarClass, "expandNotificationsPanel",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        removeCurrentOverlay();
+                    }
+                }
+            );
+            XposedBridge.log(TAG + ": Hooked StatusBar.expandNotificationsPanel");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": hookStatusBarExpand failed: " + t);
         }
     }
 
@@ -220,8 +266,15 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
-                // 单实例：新通知替换旧的
-                removeCurrentOverlayInternal();
+                // 【锁屏检测】锁屏时不显示悬浮窗
+                KeyguardManager km = (KeyguardManager) mContext.getSystemService(Context.KEYGUARD_SERVICE);
+                if (km != null && km.isKeyguardLocked()) {
+                    XposedBridge.log(TAG + ": Keyguard locked, skip: " + key);
+                    return;
+                }
+
+                // 单实例：新通知替换旧的（带动画移除）
+                dismissCurrentOverlayAnimated();
 
                 Notification notification = sbn.getNotification();
                 Bundle extras = notification.extras;
@@ -237,12 +290,12 @@ public class MainHook implements IXposedHookLoadPackage {
                 container.setPadding(20, 14, 20, 14);
                 container.setGravity(Gravity.CENTER_VERTICAL);
 
-                // ===== 毛玻璃效果 =====
+                // ===== 毛玻璃效果（提高对比度） =====
                 GradientDrawable bg = new GradientDrawable();
                 bg.setShape(GradientDrawable.RECTANGLE);
                 bg.setCornerRadius(28);
-                bg.setColor(0xB3FFFFFF);
-                bg.setStroke(2, 0x59FFFFFF);
+                bg.setColor(0xD9FFFFFF); // 85% 白，比之前的 70% 更不透明
+                bg.setStroke(2, 0x80FFFFFF); // 50% 白描边，更明显
                 container.setBackground(bg);
                 container.setElevation(18);
 
@@ -285,7 +338,34 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 container.addView(textContainer);
 
-                // ===== 点击跳转 =====
+                // ===== 已读按钮（淡蓝色文字） =====
+                TextView readBtn = new TextView(mContext);
+                readBtn.setText("已读");
+                readBtn.setTextColor(0xFF64B5F6); // Material Blue 300，淡蓝
+                readBtn.setTextSize(12);
+                readBtn.setPadding(12, 4, 12, 4);
+                LinearLayout.LayoutParams readLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                );
+                readLp.gravity = Gravity.CENTER_VERTICAL;
+                readBtn.setLayoutParams(readLp);
+                readBtn.setOnClickListener(v -> {
+                    try {
+                        // 发送 deleteIntent 模拟清除通知
+                        PendingIntent deleteIntent = notification.deleteIntent;
+                        if (deleteIntent != null) {
+                            deleteIntent.send();
+                            XposedBridge.log(TAG + ": DeleteIntent sent");
+                        }
+                    } catch (Exception e) {
+                        XposedBridge.log(TAG + ": DeleteIntent send failed: " + e);
+                    }
+                    dismissCurrentOverlayAnimated();
+                });
+                container.addView(readBtn);
+
+                // ===== 点击跳转（点击非按钮区域） =====
                 PendingIntent contentIntent = notification.contentIntent;
                 container.setOnClickListener(v -> {
                     try {
@@ -295,10 +375,10 @@ public class MainHook implements IXposedHookLoadPackage {
                     } catch (Exception e) {
                         XposedBridge.log(TAG + ": PendingIntent send failed: " + e);
                     }
-                    removeCurrentOverlay();
+                    dismissCurrentOverlayAnimated();
                 });
 
-                // ===== 跟手触摸手势（任意方向移动，UP时根据主导方向判定） =====
+                // ===== 跟手触摸手势 =====
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
 
@@ -311,12 +391,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return true;
 
                             case MotionEvent.ACTION_MOVE:
-                                // 【修复】任意方向跟手移动，不锁定方向
                                 float dx = event.getRawX() - startX;
                                 float dy = event.getRawY() - startY;
                                 v.setTranslationX(dx);
                                 v.setTranslationY(dy);
-                                // 距离越远越透明
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 float alpha = Math.max(0.5f, 1f - dist / 300f);
                                 v.setAlpha(alpha);
@@ -325,32 +403,25 @@ public class MainHook implements IXposedHookLoadPackage {
                             case MotionEvent.ACTION_UP:
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
-
-                                // 【修复】根据主导方向判定，不依赖MOVE阶段的方向锁定
                                 boolean isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
 
-                                // 上滑销毁
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
-                                    removeCurrentOverlay();
+                                    dismissCurrentOverlayAnimated();
                                     return true;
                                 }
-                                // 左滑销毁
                                 if (totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
-                                    removeCurrentOverlay();
+                                    dismissCurrentOverlayAnimated();
                                     return true;
                                 }
-                                // 右滑销毁（新增）
                                 if (totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
-                                    removeCurrentOverlay();
+                                    dismissCurrentOverlayAnimated();
                                     return true;
                                 }
-                                // 下滑：展开状态栏 + 销毁
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar();
-                                    removeCurrentOverlay();
+                                    dismissCurrentOverlayAnimated();
                                     return true;
                                 }
-                                // 未超阈值：回弹
                                 v.animate()
                                     .translationX(0)
                                     .translationY(0)
@@ -364,7 +435,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-                // ===== 窗口参数：最高层级 =====
+                // ===== 窗口参数 =====
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WIN_W,
                     WIN_H,
@@ -382,21 +453,22 @@ public class MainHook implements IXposedHookLoadPackage {
                 mWindowManager.addView(container, params);
                 mCurrentKey = key;
                 mCurrentOverlay = container;
+                mIsDismissing = false;
                 mLastShowTime = SystemClock.elapsedRealtime();
 
                 XposedBridge.log(TAG + ": Shown: " + title);
 
-                // 入场动画
+                // ===== 入场动画 =====
                 container.setAlpha(0f);
-                container.setTranslationY(-30);
+                container.setTranslationY(-40);
                 container.animate()
                     .alpha(1f)
                     .translationY(0)
-                    .setDuration(220)
+                    .setDuration(280)
                     .setInterpolator(new android.view.animation.DecelerateInterpolator())
                     .start();
 
-                mCurrentDismissRunnable = () -> removeCurrentOverlay();
+                mCurrentDismissRunnable = () -> dismissCurrentOverlayAnimated();
                 mHandler.postDelayed(mCurrentDismissRunnable, AUTO_DISMISS_MS);
 
             } catch (Throwable t) {
@@ -419,26 +491,60 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void removeCurrentOverlay() {
+    /* ===== 带动画的移除（出场动画） ===== */
+    private void dismissCurrentOverlayAnimated() {
         if (mHandler == null) return;
-        mHandler.post(() -> removeCurrentOverlayInternal());
+        mHandler.post(() -> {
+            if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
+                cleanupOverlay();
+                return;
+            }
+            if (mIsDismissing) return;
+            mIsDismissing = true;
+
+            if (mCurrentDismissRunnable != null) {
+                mHandler.removeCallbacks(mCurrentDismissRunnable);
+                mCurrentDismissRunnable = null;
+            }
+
+            // 出场动画：向上滑出 + 淡出
+            mCurrentOverlay.animate()
+                .alpha(0f)
+                .translationY(-60)
+                .setDuration(200)
+                .setInterpolator(new android.view.animation.AccelerateInterpolator())
+                .withEndAction(() -> {
+                    try {
+                        if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
+                            mWindowManager.removeView(mCurrentOverlay);
+                        }
+                    } catch (Throwable ignored) {}
+                    cleanupOverlay();
+                })
+                .start();
+        });
     }
 
-    private void removeCurrentOverlayInternal() {
-        try {
+    /* ===== 立即移除（无动画，用于替换旧通知） ===== */
+    private void removeCurrentOverlay() {
+        if (mHandler == null) return;
+        mHandler.post(() -> {
             if (mCurrentDismissRunnable != null) {
                 mHandler.removeCallbacks(mCurrentDismissRunnable);
                 mCurrentDismissRunnable = null;
             }
             if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
-                mWindowManager.removeView(mCurrentOverlay);
-                XposedBridge.log(TAG + ": Removed: " + mCurrentKey);
+                try {
+                    mWindowManager.removeView(mCurrentOverlay);
+                } catch (Throwable ignored) {}
             }
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": removeOverlay error: " + t);
-        } finally {
-            mCurrentOverlay = null;
-            mCurrentKey = null;
-        }
+            cleanupOverlay();
+        });
+    }
+
+    private void cleanupOverlay() {
+        mCurrentOverlay = null;
+        mCurrentKey = null;
+        mIsDismissing = false;
     }
 }
