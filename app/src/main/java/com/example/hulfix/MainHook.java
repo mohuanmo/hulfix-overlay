@@ -31,7 +31,8 @@ import java.lang.reflect.Method;
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
     private static final long AUTO_DISMISS_MS = 6000;
-    private static final long COOLDOWN_MS = 7000;
+    private static final long COOLDOWN_MS = 3000;          // 【改】从 7000 缩短到 3000
+    private static final long NOTIFICATION_MAX_AGE_MS = 3000; // 【新增】新鲜通知阈值
 
     /* ===== 窗口位置 ===== */
     private static final int WIN_X = 1386;
@@ -56,7 +57,8 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ===== 单实例 ===== */
     private String mCurrentKey = null;
     private View mCurrentOverlay = null;
-    private View mCurrentRowView = null; // 系统原始 rowView
+    private View mCurrentRowView = null;
+    private String mCurrentContentHash = null;             // 【新增】当前显示内容哈希
     private Runnable mAutoDismissRunnable = null;
     private long mLastDismissTime = 0;
 
@@ -69,7 +71,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v17 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v18 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -77,6 +79,14 @@ public class MainHook implements IXposedHookLoadPackage {
 
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
+    }
+
+    /* ================================================================ */
+    /*  【新增】判断通知是否新鲜（3 秒内），防止旧通知借尸还魂            */
+    /* ================================================================ */
+    private boolean isFreshNotification(StatusBarNotification sbn) {
+        long age = System.currentTimeMillis() - sbn.getPostTime();
+        return age <= NOTIFICATION_MAX_AGE_MS;
     }
 
     /* ================================================================ */
@@ -116,6 +126,14 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return;
                             }
 
+                            // 【新增】新鲜度过滤：只处理 3 秒内的新通知
+                            if (!isFreshNotification(sbn)) {
+                                long age = System.currentTimeMillis() - sbn.getPostTime();
+                                XposedBridge.log(TAG + ": Skip stale in IsVisible, age=" + age + "ms, key=" + key);
+                                param.setResult(null);
+                                return;
+                            }
+
                             XposedBridge.log(TAG + ": HeadsUpIsVisible before, key=" + key);
                             param.setResult(null);
 
@@ -124,9 +142,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
                             }
 
-                            // 保存系统 rowView，销毁时需要清理
                             mCurrentRowView = rowView;
-
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
@@ -160,9 +176,9 @@ public class MainHook implements IXposedHookLoadPackage {
 
                             View rowView = (View) param.thisObject;
 
-                            // 【保护】如果系统正在清理我们已销毁的通知，不阻止也不显示
+                            // v17 保护逻辑保留
                             if (mCurrentKey == null && mCurrentRowView == rowView) {
-                                return; // 让系统正常执行清理
+                                return;
                             }
 
                             if (animatingAway) return;
@@ -187,6 +203,14 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return;
                             }
 
+                            // 【新增】新鲜度过滤：只处理 3 秒内的新通知
+                            if (!isFreshNotification(sbn)) {
+                                long age = System.currentTimeMillis() - sbn.getPostTime();
+                                XposedBridge.log(TAG + ": Skip stale in AnimatingAway, age=" + age + "ms, key=" + key);
+                                param.setResult(null);
+                                return;
+                            }
+
                             XposedBridge.log(TAG + ": AnimatingAway before, key=" + key);
                             param.setResult(null);
 
@@ -196,7 +220,6 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
 
                             mCurrentRowView = rowView;
-
                             showCustomHeadsUp(sbn);
 
                         } catch (Throwable t) {
@@ -243,12 +266,10 @@ public class MainHook implements IXposedHookLoadPackage {
     private void clearSystemHeadsUp() {
         if (mCurrentRowView != null) {
             try {
-                // 强制关闭 Heads-Up 状态，清理系统内部管理器
                 XposedHelpers.callMethod(mCurrentRowView, "setHeadsUp", false);
                 XposedBridge.log(TAG + ": setHeadsUp(false) called");
             } catch (Throwable t1) {
                 try {
-                    // 备选：触发退出动画流程
                     XposedHelpers.callMethod(mCurrentRowView, "setHeadsUpAnimatingAway", true);
                     XposedBridge.log(TAG + ": setHeadsUpAnimatingAway(true) called");
                 } catch (Throwable ignored) {}
@@ -395,8 +416,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
-                removeOverlayImmediate();
-
                 Notification notification = sbn.getNotification();
                 Bundle extras = notification.extras;
 
@@ -404,6 +423,21 @@ public class MainHook implements IXposedHookLoadPackage {
                 CharSequence text = extras.getCharSequence(Notification.EXTRA_TEXT, "");
                 CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "");
                 String content = bigText.length() > 0 ? bigText.toString() : text.toString();
+                String newContent = title + "|" + content;
+                String newHash = Integer.toHexString(newContent.hashCode());
+
+                // 【新增】内容变化检测
+                if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
+                    if (newHash.equals(mCurrentContentHash)) {
+                        XposedBridge.log(TAG + ": Same content, skip duplicate, key=" + key);
+                        return;
+                    } else {
+                        XposedBridge.log(TAG + ": Content changed, force update, key=" + key);
+                    }
+                }
+
+                removeOverlayImmediate();
+                mCurrentContentHash = newHash;
 
                 // ===== 根容器 =====
                 LinearLayout container = new LinearLayout(mContext);
@@ -668,7 +702,6 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mCurrentKey != null) {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
-        // 【关键】清理系统 Heads-Up 状态，防止留下幽灵通知
         clearSystemHeadsUp();
         cleanupOverlayState();
     }
@@ -676,5 +709,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private void cleanupOverlayState() {
         mCurrentOverlay = null;
         mCurrentKey = null;
+        mCurrentContentHash = null;  // 【新增】清理内容哈希
     }
 }
