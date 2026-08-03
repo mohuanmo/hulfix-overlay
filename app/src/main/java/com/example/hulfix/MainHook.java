@@ -173,8 +173,8 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
                             if (mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": expandNotificationsPanel, destroy overlay");
-                                removeOverlayImmediate();
+                                XposedBridge.log(TAG + ": expandNotificationsPanel, hide overlay only");
+                                hideOverlayOnly();
                             }
                         }
                     }
@@ -183,65 +183,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log(TAG + ": hook expandNotificationsPanel skipped: " + t);
             }
 
-            // 4b. onPanelExpansionChanged — 手势下拉触发的核心方法 (AOSP 13)
-            //     签名可能是 (float, boolean) 或 (float, boolean, boolean)
-            try {
-                XposedHelpers.findAndHookMethod(statusBarClass, "onPanelExpansionChanged",
-                    float.class, boolean.class, boolean.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            boolean expanded = (boolean) param.args[1];
-                            if (expanded && mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": onPanelExpansionChanged(expanded=true), destroy overlay");
-                                removeOverlayImmediate();
-                            }
-                        }
-                    }
-                );
-                XposedBridge.log(TAG + ": hooked onPanelExpansionChanged(float,boolean,boolean)");
-            } catch (Throwable t1) {
-                try {
-                    XposedHelpers.findAndHookMethod(statusBarClass, "onPanelExpansionChanged",
-                        float.class, boolean.class,
-                        new XC_MethodHook() {
-                            @Override
-                            protected void beforeHookedMethod(MethodHookParam param) {
-                                boolean expanded = (boolean) param.args[1];
-                                if (expanded && mCurrentOverlay != null) {
-                                    XposedBridge.log(TAG + ": onPanelExpansionChanged(expanded=true), destroy overlay");
-                                    removeOverlayImmediate();
-                                }
-                            }
-                        }
-                    );
-                    XposedBridge.log(TAG + ": hooked onPanelExpansionChanged(float,boolean)");
-                } catch (Throwable t2) {
-                    XposedBridge.log(TAG + ": hook onPanelExpansionChanged failed: " + t2);
-                }
-            }
-
-            // 4c. setPanelExpanded — 某些 ROM 直接调用此方法
-            try {
-                XposedHelpers.findAndHookMethod(statusBarClass, "setPanelExpanded",
-                    boolean.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            boolean expanded = (boolean) param.args[0];
-                            if (expanded && mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": setPanelExpanded(true), destroy overlay");
-                                removeOverlayImmediate();
-                            }
-                        }
-                    }
-                );
-                XposedBridge.log(TAG + ": hooked setPanelExpanded(boolean)");
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": hook setPanelExpanded skipped: " + t);
-            }
-
-            // 4d. setExpandedVisible — 某些 ROM 的展开状态入口
+            // 4b. setExpandedVisible — 某些 ROM 的展开状态入口
             try {
                 XposedHelpers.findAndHookMethod(statusBarClass, "setExpandedVisible",
                     boolean.class,
@@ -250,8 +192,8 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void beforeHookedMethod(MethodHookParam param) {
                             boolean visible = (boolean) param.args[0];
                             if (visible && mCurrentOverlay != null) {
-                                XposedBridge.log(TAG + ": setExpandedVisible(true), destroy overlay");
-                                removeOverlayImmediate();
+                                XposedBridge.log(TAG + ": setExpandedVisible(true), hide overlay only");
+                                hideOverlayOnly();
                             }
                         }
                     }
@@ -259,6 +201,24 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log(TAG + ": hooked setExpandedVisible(boolean)");
             } catch (Throwable t) {
                 XposedBridge.log(TAG + ": hook setExpandedVisible skipped: " + t);
+            }
+
+            // 4c. makeExpandedVisible — AOSP 13 手势下拉状态栏的核心入口
+            try {
+                XposedHelpers.findAndHookMethod(statusBarClass, "makeExpandedVisible",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (mCurrentOverlay != null) {
+                                XposedBridge.log(TAG + ": makeExpandedVisible, hide overlay only");
+                                hideOverlayOnly();
+                            }
+                        }
+                    }
+                );
+                XposedBridge.log(TAG + ": hooked makeExpandedVisible");
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": hook makeExpandedVisible skipped: " + t);
             }
 
             XposedBridge.log(TAG + ": StatusBar hooks installed");
@@ -380,6 +340,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
                         try {
+                            // 【v24】状态栏已展开时不创建 overlay（双重保险）
+                            if (isStatusBarExpanded()) {
+                                XposedBridge.log(TAG + ": StatusBar expanded, skip HeadsUpIsVisible");
+                                param.setResult(null);
+                                return;
+                            }
+
                             View rowView = (View) param.thisObject;
                             if (!isLandscape(rowView)) return;
 
@@ -446,6 +413,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
                         try {
+                            // 【v24】状态栏已展开时不创建 overlay（双重保险）
+                            if (isStatusBarExpanded()) {
+                                XposedBridge.log(TAG + ": StatusBar expanded, skip AnimatingAway");
+                                param.setResult(null);
+                                return;
+                            }
+
                             boolean animatingAway = (boolean) param.args[0];
                             View rowView = (View) param.thisObject;
 
@@ -854,7 +828,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar();
-                                    dismissOverlayAnimated();
+                                    hideOverlayOnly();
                                     return true;
                                 }
 
@@ -972,6 +946,47 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ===== 立即移除（【v22】清理逻辑统一，删除死代码） ===== */
+    /* ================================================================ */
+    /*  仅隐藏 overlay（用户主动下拉/展开状态栏时使用，不清理系统通知） */
+    /* ================================================================ */
+    private void hideOverlayOnly() {
+        cancelAllAnimations();
+        if (mAutoDismissRunnable != null) {
+            mHandler.removeCallbacks(mAutoDismissRunnable);
+            mAutoDismissRunnable = null;
+        }
+
+        // 重置 rowView 状态，让系统知道 overlay 已隐藏
+        if (mCurrentRowView != null) {
+            try {
+                XposedHelpers.callMethod(mCurrentRowView, "setHeadsUp", false);
+            } catch (Throwable t1) {
+                try {
+                    XposedHelpers.callMethod(mCurrentRowView, "setHeadsUpAnimatingAway", true);
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        // 移除窗口
+        if (mCurrentOverlay != null) {
+            try {
+                if (mCurrentOverlay.getParent() != null) {
+                    mWindowManager.removeView(mCurrentOverlay);
+                }
+            } catch (Throwable t) {
+                try {
+                    mWindowManager.removeViewImmediate(mCurrentOverlay);
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        mCurrentKey = null;
+        mCurrentRowView = null;
+        mCurrentOverlay = null;
+        mCurrentContentHash = null;
+        mLastDismissTime = SystemClock.elapsedRealtime();
+    }
+
     private void removeOverlayImmediate() {
         cancelAllAnimations();
         if (mAutoDismissRunnable != null) {
