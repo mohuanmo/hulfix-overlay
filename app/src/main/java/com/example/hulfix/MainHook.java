@@ -74,7 +74,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v19 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v20 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -222,6 +222,14 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
 
                             if (animatingAway) return;
+
+                            // 【修复 v20】增加 isHeadsUp 判断，防止拦截通知展开/折叠
+                            boolean isHeadsUp = false;
+                            try {
+                                isHeadsUp = (boolean) XposedHelpers.callMethod(rowView, "isHeadsUp");
+                            } catch (Throwable ignored) {}
+                            if (!isHeadsUp) return;
+
                             if (!isLandscape(rowView)) return;
 
                             StatusBarNotification sbn = getSbnFromRow(rowView);
@@ -559,24 +567,26 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 container.addView(readBtn);
 
-                // ===== 点击跳转 【修复】传入 ActivityOptions =====
+                // ===== 点击跳转 【修复 v20】使用 send(Bundle) 重载 =====
                 PendingIntent contentIntent = notification.contentIntent;
                 container.setOnClickListener(v -> {
                     try {
                         if (contentIntent != null) {
                             android.app.ActivityOptions opts = android.app.ActivityOptions.makeBasic();
-                            contentIntent.send(null, 0, null, null, null, null, opts.toBundle());
+                            // 【修复 v20】使用 send(Bundle) 重载，避免 Context 为 null 的问题
+                            contentIntent.send(opts.toBundle());
                             XposedBridge.log(TAG + ": ContentIntent sent with ActivityOptions");
                         }
                     } catch (Exception e) {
                         XposedBridge.log(TAG + ": PendingIntent with options failed: " + e);
                         try {
                             if (contentIntent != null) {
-                                contentIntent.send();
-                                XposedBridge.log(TAG + ": ContentIntent sent (fallback)");
+                                // 终极 fallback：使用 mContext 启动
+                                contentIntent.send(mContext, 0, null);
+                                XposedBridge.log(TAG + ": ContentIntent sent with mContext fallback");
                             }
                         } catch (Exception e2) {
-                            XposedBridge.log(TAG + ": PendingIntent fallback failed: " + e2);
+                            XposedBridge.log(TAG + ": PendingIntent all fallbacks failed: " + e2);
                         }
                     }
                     dismissOverlayAnimated();
@@ -738,6 +748,21 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         String keyToRemove = mCurrentKey;
+        View rowViewSnapshot = mCurrentRowView;
+
+        // 【修复 v20】先彻底清理系统 Heads-Up，再清空 key
+        // 这样在 Hook 触发时 mCurrentKey 仍有值，能继续拦截系统显示
+        removeSystemHeadsUpEntry(keyToRemove);
+
+        if (rowViewSnapshot != null) {
+            try {
+                XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUp", false);
+            } catch (Throwable t1) {
+                try {
+                    XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUpAnimatingAway", true);
+                } catch (Throwable ignored) {}
+            }
+        }
 
         if (mCurrentOverlay != null) {
             try {
@@ -755,11 +780,10 @@ public class MainHook implements IXposedHookLoadPackage {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
 
-        // 【关键】先清空 key，防止 clearSystemHeadsUp 触发 Hook 时重复显示
+        // 现在安全地清空 key
         mCurrentKey = null;
+        mCurrentRowView = null;
 
-        clearSystemHeadsUp();
-        removeSystemHeadsUpEntry(keyToRemove);
         cleanupOverlayState();
     }
 
