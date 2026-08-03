@@ -30,8 +30,8 @@ import java.lang.reflect.Method;
 
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
-    private static final long AUTO_DISMISS_MS = 6000; // 增加1秒
-    private static final long COOLDOWN_MS = 7000;     // 比系统5秒多2秒
+    private static final long AUTO_DISMISS_MS = 6000;
+    private static final long COOLDOWN_MS = 7000;
 
     /* ===== 窗口位置 ===== */
     private static final int WIN_X = 1386;
@@ -42,10 +42,16 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ===== 手势阈值 ===== */
     private static final float SWIPE_DESTROY_THRESHOLD = 70f;
     private static final float PULLDOWN_THRESHOLD = 120f;
-    private static final float DIRECTION_LOCK_SLOP = 25f; // 方向锁定前允许的斜滑距离
+    private static final float DIRECTION_LOCK_SLOP = 25f;
 
     /* ===== 屏蔽列表 ===== */
     private static final String BLOCK_PKG = "com.omarea.vtools";
+
+    /* ===== 窗口类型：使用 TYPE_STATUS_BAR_SUB_PANEL (2017) =====
+     * 该类型明确显示在 TYPE_STATUS_BAR_PANEL (2014, 系统 Heads-Up 用) 之上
+     * 在 SystemUI 进程中有权限使用
+     */
+    private static final int WINDOW_TYPE = 2017; // TYPE_STATUS_BAR_SUB_PANEL
 
     private Context mContext;
     private WindowManager mWindowManager;
@@ -55,7 +61,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private String mCurrentKey = null;
     private View mCurrentOverlay = null;
     private Runnable mAutoDismissRunnable = null;
-    private long mLastDismissTime = 0; // 上次消失时间（用于冷却）
+    private long mLastDismissTime = 0;
 
     /* ===== 手动动画 Runnable ===== */
     private Runnable mEnterAnimRunnable = null;
@@ -66,7 +72,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v15 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v16 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -101,7 +107,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
                             String key = sbn.getKey();
 
-                            // 冷却检测：7秒内同一通知不重复显示
+                            // 冷却检测
                             long now = SystemClock.elapsedRealtime();
                             if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
                                 param.setResult(null);
@@ -163,7 +169,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
                             String key = sbn.getKey();
 
-                            // 冷却检测
                             long now = SystemClock.elapsedRealtime();
                             if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
                                 param.setResult(null);
@@ -484,7 +489,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float dx = event.getRawX() - startX;
                                 float dy = event.getRawY() - startY;
 
-                                // 方向锁定：超过 SLOP 后判定主导方向
                                 if (!lockedHorizontal && !lockedVertical) {
                                     if (Math.abs(dx) > DIRECTION_LOCK_SLOP || Math.abs(dy) > DIRECTION_LOCK_SLOP) {
                                         if (Math.abs(dx) > Math.abs(dy)) {
@@ -496,20 +500,16 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
 
                                 if (lockedHorizontal) {
-                                    // 水平锁定：只动 X，Y 归零
                                     v.setTranslationX(dx);
                                     v.setTranslationY(0);
                                 } else if (lockedVertical) {
-                                    // 垂直锁定：只动 Y，X 归零
                                     v.setTranslationX(0);
                                     v.setTranslationY(dy);
                                 } else {
-                                    // 未锁定前：自由跟手（但范围小）
                                     v.setTranslationX(dx);
                                     v.setTranslationY(dy);
                                 }
 
-                                // 透明度随距离
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 float alpha = Math.max(0.5f, 1f - dist / 300f);
                                 v.setAlpha(alpha);
@@ -519,7 +519,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
 
-                                // 根据锁定方向或总位移判定
                                 boolean isHorizontal;
                                 if (lockedHorizontal) {
                                     isHorizontal = true;
@@ -529,28 +528,23 @@ public class MainHook implements IXposedHookLoadPackage {
                                     isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
                                 }
 
-                                // 上滑销毁
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
                                     dismissOverlayAnimated();
                                     return true;
                                 }
-                                // 左滑销毁
                                 if (totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     dismissOverlayAnimated();
                                     return true;
                                 }
-                                // 右滑销毁
                                 if (totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     dismissOverlayAnimated();
                                     return true;
                                 }
-                                // 下滑：展开状态栏 + 销毁
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar();
                                     dismissOverlayAnimated();
                                     return true;
                                 }
-                                // 未超阈值：回弹
                                 startBounceAnimation(v);
                                 return true;
                         }
@@ -558,11 +552,11 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-                // ===== 窗口参数 =====
+                // ===== 窗口参数：使用 TYPE_STATUS_BAR_SUB_PANEL 确保在系统 Heads-Up 之上 =====
                 WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                     WIN_W,
                     WIN_H,
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WINDOW_TYPE, // 2017 = TYPE_STATUS_BAR_SUB_PANEL
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -642,7 +636,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 } catch (Throwable ignored) {}
             }
         }
-        // 记录消失时间（用于冷却）
         if (mCurrentKey != null) {
             mLastDismissTime = SystemClock.elapsedRealtime();
         }
