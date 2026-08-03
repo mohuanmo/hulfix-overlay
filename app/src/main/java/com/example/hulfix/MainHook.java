@@ -240,7 +240,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log(TAG + ": hook makeExpandedVisible skipped: " + t);
             }
 
-            // 5. PanelViewController.onTrackingStarted — 用户开始下拉状态栏时立即隐藏 overlay
+            // 5. PanelViewController — 用户下拉状态栏时立即清理 overlay，停止时重置标志
             //    这是最早能检测到手势下拉的 hook 点，比 StatusBar 的方法更可靠
             try {
                 Class<?> panelControllerClass = XposedHelpers.findClass(
@@ -259,13 +259,6 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
                     }
                 );
-                XposedBridge.log(TAG + ": hooked PanelViewController.onTrackingStarted");
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": hook PanelViewController.onTrackingStarted skipped: " + t);
-            }
-
-            // 6. onTrackingStopped — 用户停止下拉时重置标志
-            try {
                 XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStopped",
                     new XC_MethodHook() {
                         @Override
@@ -275,9 +268,9 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
                     }
                 );
-                XposedBridge.log(TAG + ": hooked PanelViewController.onTrackingStopped");
+                XposedBridge.log(TAG + ": hooked PanelViewController.onTrackingStarted/onTrackingStopped");
             } catch (Throwable t) {
-                XposedBridge.log(TAG + ": hook PanelViewController.onTrackingStopped skipped: " + t);
+                XposedBridge.log(TAG + ": hook PanelViewController skipped: " + t);
             }
 
             XposedBridge.log(TAG + ": StatusBar hooks installed");
