@@ -30,7 +30,8 @@ import java.lang.reflect.Method;
 
 public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
-    private static final long AUTO_DISMISS_MS = 5000;
+    private static final long AUTO_DISMISS_MS = 6000; // 增加1秒
+    private static final long COOLDOWN_MS = 7000;     // 比系统5秒多2秒
 
     /* ===== 窗口位置 ===== */
     private static final int WIN_X = 1386;
@@ -39,8 +40,9 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final int WIN_H = 119;
 
     /* ===== 手势阈值 ===== */
-    private static final float SWIPE_DESTROY_THRESHOLD = 70f;   // 降低阈值，更灵敏
+    private static final float SWIPE_DESTROY_THRESHOLD = 70f;
     private static final float PULLDOWN_THRESHOLD = 120f;
+    private static final float DIRECTION_LOCK_SLOP = 25f; // 方向锁定前允许的斜滑距离
 
     /* ===== 屏蔽列表 ===== */
     private static final String BLOCK_PKG = "com.omarea.vtools";
@@ -53,8 +55,9 @@ public class MainHook implements IXposedHookLoadPackage {
     private String mCurrentKey = null;
     private View mCurrentOverlay = null;
     private Runnable mAutoDismissRunnable = null;
+    private long mLastDismissTime = 0; // 上次消失时间（用于冷却）
 
-    /* ===== 手动动画 Runnable（彻底替代 View.animate()） ===== */
+    /* ===== 手动动画 Runnable ===== */
     private Runnable mEnterAnimRunnable = null;
     private Runnable mExitAnimRunnable = null;
     private Runnable mBounceAnimRunnable = null;
@@ -63,7 +66,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v14 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v15 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -98,8 +101,14 @@ public class MainHook implements IXposedHookLoadPackage {
 
                             String key = sbn.getKey();
 
-                            // 【ID 去重】如果正在显示同一条通知，静默阻止系统显示
+                            // 冷却检测：7秒内同一通知不重复显示
+                            long now = SystemClock.elapsedRealtime();
                             if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
+                                param.setResult(null);
+                                return;
+                            }
+                            if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
+                                XposedBridge.log(TAG + ": Cooldown skip: " + key);
                                 param.setResult(null);
                                 return;
                             }
@@ -153,7 +162,15 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (BLOCK_PKG.equals(sbn.getPackageName())) return;
 
                             String key = sbn.getKey();
+
+                            // 冷却检测
+                            long now = SystemClock.elapsedRealtime();
                             if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
+                                param.setResult(null);
+                                return;
+                            }
+                            if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
+                                XposedBridge.log(TAG + ": Cooldown skip(AnimatingAway): " + key);
                                 param.setResult(null);
                                 return;
                             }
@@ -225,7 +242,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  入场动画：手动逐帧（完全替代 View.animate()）                   */
+    /*  入场动画                                                        */
     /* ================================================================ */
     private void startEnterAnimation(final View view) {
         cancelAllAnimations();
@@ -235,7 +252,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mEnterAnimRunnable = new Runnable() {
             int frame = 0;
-            final int totalFrames = 18; // ~280ms
+            final int totalFrames = 18;
             @Override
             public void run() {
                 if (view.getParent() == null) {
@@ -244,7 +261,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
                 frame++;
                 float fraction = Math.min(1f, (float) frame / totalFrames);
-                // Decelerate: 1 - (1-t)^2
                 float decel = 1f - (1f - fraction) * (1f - fraction);
                 view.setAlpha(decel);
                 view.setTranslationY(-40f * (1f - decel));
@@ -259,7 +275,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  出场动画：手动逐帧                                              */
+    /*  出场动画                                                        */
     /* ================================================================ */
     private void startExitAnimation(final View view, final Runnable onEnd) {
         cancelAllAnimations();
@@ -269,7 +285,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mExitAnimRunnable = new Runnable() {
             int frame = 0;
-            final int totalFrames = 13; // ~200ms
+            final int totalFrames = 13;
             @Override
             public void run() {
                 if (view.getParent() == null) {
@@ -279,11 +295,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
                 frame++;
                 float fraction = Math.min(1f, (float) frame / totalFrames);
-                // Accelerate: t^2
                 float accel = fraction * fraction;
                 view.setAlpha(startAlpha * (1f - accel));
                 view.setTranslationY(startTy - 60f * accel);
-                view.setTranslationX(startTx); // 保持水平位置
+                view.setTranslationX(startTx);
                 if (frame < totalFrames) {
                     mHandler.postDelayed(this, 16);
                 } else {
@@ -296,7 +311,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  回弹动画：手动逐帧（带 overshoot）                              */
+    /*  回弹动画                                                        */
     /* ================================================================ */
     private void startBounceAnimation(final View view) {
         cancelAllAnimations();
@@ -306,7 +321,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mBounceAnimRunnable = new Runnable() {
             int frame = 0;
-            final int totalFrames = 15; // ~240ms
+            final int totalFrames = 15;
             @Override
             public void run() {
                 if (view.getParent() == null) {
@@ -315,8 +330,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
                 frame++;
                 float fraction = Math.min(1f, (float) frame / totalFrames);
-                // Overshoot + settle: 先超过再回来
-                // 使用简化的弹性公式: sin(fraction * PI) * 0.1 * (1-fraction) + fraction
                 float overshoot = (float) Math.sin(fraction * Math.PI) * 0.15f * (1f - fraction);
                 float eased = fraction + overshoot;
                 view.setTranslationX(startTx * (1f - eased));
@@ -348,7 +361,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
-                // 清理旧的（无动画，立即移除）
                 removeOverlayImmediate();
 
                 Notification notification = sbn.getNotification();
@@ -365,12 +377,12 @@ public class MainHook implements IXposedHookLoadPackage {
                 container.setPadding(20, 14, 20, 14);
                 container.setGravity(Gravity.CENTER_VERTICAL);
 
-                // ===== 毛玻璃效果（提高对比度） =====
+                // ===== 毛玻璃效果 =====
                 GradientDrawable bg = new GradientDrawable();
                 bg.setShape(GradientDrawable.RECTANGLE);
                 bg.setCornerRadius(28);
-                bg.setColor(0xD9FFFFFF); // 85% 白
-                bg.setStroke(2, 0x80FFFFFF); // 50% 白描边
+                bg.setColor(0xD9FFFFFF);
+                bg.setStroke(2, 0x80FFFFFF);
                 container.setBackground(bg);
                 container.setElevation(18);
 
@@ -413,10 +425,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 container.addView(textContainer);
 
-                // ===== 已读按钮（淡蓝色文字） =====
+                // ===== 已读按钮 =====
                 TextView readBtn = new TextView(mContext);
                 readBtn.setText("已读");
-                readBtn.setTextColor(0xFF64B5F6); // Material Blue 300
+                readBtn.setTextColor(0xFF64B5F6);
                 readBtn.setTextSize(12);
                 readBtn.setPadding(12, 4, 12, 4);
                 LinearLayout.LayoutParams readLp = new LinearLayout.LayoutParams(
@@ -452,9 +464,11 @@ public class MainHook implements IXposedHookLoadPackage {
                     dismissOverlayAnimated();
                 });
 
-                // ===== 跟手触摸手势（方向判定优化） =====
+                // ===== 方向锁定滑动 =====
                 container.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
+                    boolean lockedHorizontal = false;
+                    boolean lockedVertical = false;
 
                     @Override
                     public boolean onTouch(View v, MotionEvent event) {
@@ -462,13 +476,40 @@ public class MainHook implements IXposedHookLoadPackage {
                             case MotionEvent.ACTION_DOWN:
                                 startX = event.getRawX();
                                 startY = event.getRawY();
+                                lockedHorizontal = false;
+                                lockedVertical = false;
                                 return true;
 
                             case MotionEvent.ACTION_MOVE:
                                 float dx = event.getRawX() - startX;
                                 float dy = event.getRawY() - startY;
-                                v.setTranslationX(dx);
-                                v.setTranslationY(dy);
+
+                                // 方向锁定：超过 SLOP 后判定主导方向
+                                if (!lockedHorizontal && !lockedVertical) {
+                                    if (Math.abs(dx) > DIRECTION_LOCK_SLOP || Math.abs(dy) > DIRECTION_LOCK_SLOP) {
+                                        if (Math.abs(dx) > Math.abs(dy)) {
+                                            lockedHorizontal = true;
+                                        } else {
+                                            lockedVertical = true;
+                                        }
+                                    }
+                                }
+
+                                if (lockedHorizontal) {
+                                    // 水平锁定：只动 X，Y 归零
+                                    v.setTranslationX(dx);
+                                    v.setTranslationY(0);
+                                } else if (lockedVertical) {
+                                    // 垂直锁定：只动 Y，X 归零
+                                    v.setTranslationX(0);
+                                    v.setTranslationY(dy);
+                                } else {
+                                    // 未锁定前：自由跟手（但范围小）
+                                    v.setTranslationX(dx);
+                                    v.setTranslationY(dy);
+                                }
+
+                                // 透明度随距离
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 float alpha = Math.max(0.5f, 1f - dist / 300f);
                                 v.setAlpha(alpha);
@@ -478,10 +519,15 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
 
-                                // 【方向判定优化】扩大水平判定范围
-                                // 只要垂直位移不超过水平位移的 1.5 倍，就判定为水平方向
-                                boolean isHorizontal = Math.abs(totalDx) > 30f
-                                    && Math.abs(totalDy) < Math.abs(totalDx) * 1.5f;
+                                // 根据锁定方向或总位移判定
+                                boolean isHorizontal;
+                                if (lockedHorizontal) {
+                                    isHorizontal = true;
+                                } else if (lockedVertical) {
+                                    isHorizontal = false;
+                                } else {
+                                    isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
+                                }
 
                                 // 上滑销毁
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
@@ -504,7 +550,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     dismissOverlayAnimated();
                                     return true;
                                 }
-                                // 未超阈值：回弹（增加回弹范围感）
+                                // 未超阈值：回弹
                                 startBounceAnimation(v);
                                 return true;
                         }
@@ -533,7 +579,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 XposedBridge.log(TAG + ": Shown: " + title);
 
-                // 手动入场动画
+                // 入场动画
                 startEnterAnimation(container);
 
                 // 自动消失
@@ -560,7 +606,7 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    /* ===== 带动画的移除（出场动画） ===== */
+    /* ===== 带动画的移除 ===== */
     private void dismissOverlayAnimated() {
         if (mHandler == null) return;
         mHandler.post(() -> {
@@ -578,7 +624,7 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
-    /* ===== 立即移除（无动画，用于替换旧通知） ===== */
+    /* ===== 立即移除 ===== */
     private void removeOverlayImmediate() {
         cancelAllAnimations();
         if (mAutoDismissRunnable != null) {
@@ -591,12 +637,14 @@ public class MainHook implements IXposedHookLoadPackage {
                     mWindowManager.removeView(mCurrentOverlay);
                 }
             } catch (Throwable t) {
-                XposedBridge.log(TAG + ": removeView error: " + t);
-                // 即使异常也强制清理
                 try {
                     mWindowManager.removeViewImmediate(mCurrentOverlay);
                 } catch (Throwable ignored) {}
             }
+        }
+        // 记录消失时间（用于冷却）
+        if (mCurrentKey != null) {
+            mLastDismissTime = SystemClock.elapsedRealtime();
         }
         cleanupOverlayState();
     }
@@ -604,6 +652,5 @@ public class MainHook implements IXposedHookLoadPackage {
     private void cleanupOverlayState() {
         mCurrentOverlay = null;
         mCurrentKey = null;
-        mAutoDismissRunnable = null;
     }
 }
