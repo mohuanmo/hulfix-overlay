@@ -89,10 +89,15 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private boolean mIsPanelExpanded = false;
 
+    private View mShieldView = null;
+    private String mShieldKey = null;
+    private Runnable mShieldRemoveRunnable = null;
+    private static final long SHIELD_MAX_LIFE_MS = 10000;
+
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v22 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v23 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
@@ -188,6 +193,17 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook PanelViewController skipped: " + t); }
+            try {
+                XposedBridge.hookAllMethods(statusBarClass, "removeNotification", new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) {
+                        String removedKey = null;
+                        try { removedKey = (String) param.args[0]; } catch (Throwable ignored) {}
+                        if (removedKey != null && removedKey.equals(mShieldKey)) {
+                            removeShieldOnly();
+                        }
+                    }
+                });
+            } catch (Throwable t) { XposedBridge.log(TAG + ": hook removeNotification skipped: " + t); }
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": StatusBar hooks failed: " + t);
         }
@@ -296,7 +312,11 @@ public class MainHook implements IXposedHookLoadPackage {
                             param.setResult(null); return;
                         }
                         if (key.equals(mCurrentKey) && mCurrentOverlay != null) { param.setResult(null); return; }
-                        if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) { param.setResult(null); return; }
+                        if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
+                            param.setResult(null);
+                            showShieldOnly(key);
+                            return;
+                        }
                         if (!isFreshNotification(sbn)) { param.setResult(null); return; }
                         param.setResult(null);
                         if (mContext == null) {
@@ -336,7 +356,11 @@ public class MainHook implements IXposedHookLoadPackage {
                             param.setResult(null); return;
                         }
                         if (key.equals(mCurrentKey) && mCurrentOverlay != null) { param.setResult(null); return; }
-                        if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) { param.setResult(null); return; }
+                        if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
+                            param.setResult(null);
+                            showShieldOnly(key);
+                            return;
+                        }
                         if (!isFreshNotification(sbn)) { param.setResult(null); return; }
                         param.setResult(null);
                         if (mContext == null) {
@@ -413,7 +437,7 @@ public class MainHook implements IXposedHookLoadPackage {
         mEnterAnim.start();
     }
 
-    private void startExitAnimation(final View view, final Runnable onEnd, final boolean slideUpward) {
+    private void startExitAnimation(final View view, final Runnable onEnd, final int exitDirection) {
         cancelAllAnimations();
         mExitAnim = ValueAnimator.ofFloat(0f, 1f);
         mExitAnim.setDuration(128);
@@ -422,8 +446,11 @@ public class MainHook implements IXposedHookLoadPackage {
             float ease = (float) anim.getAnimatedValue();
             float realEase = ease * ease;
             view.setAlpha(1f - realEase);
-            if (slideUpward) view.setTranslationY(-80f * realEase);
-            else view.setTranslationX(-80f * realEase);
+            switch (exitDirection) {
+                case 1: view.setTranslationY(-80f * realEase); view.setTranslationX(0f); break;
+                case 2: view.setTranslationX(80f * realEase); view.setTranslationY(0f); break;
+                default: view.setTranslationX(-80f * realEase); view.setTranslationY(0f); break;
+            }
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -485,10 +512,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 mCurrentContentHash = newHash;
 
                 boolean isDark = isDarkMode();
-                int glassBaseColor = isDark ? 0x26000000 : 0x26FFFFFF;
-                int edgeColor = isDark ? 0x30FFFFFF : 0x45FFFFFF;
-                int topHighlightStart = isDark ? 0x20FFFFFF : 0x50FFFFFF;
-                int bottomGlowEnd = isDark ? 0x10FFFFFF : 0x18FFFFFF;
+                int glassBaseColor = isDark ? 0x30000000 : 0x30FFFFFF;
+                int edgeColor = isDark ? 0x35FFFFFF : 0x50FFFFFF;
+                int topHighlightStart = isDark ? 0x30FFFFFF : 0x60FFFFFF;
+                int bottomGlowEnd = isDark ? 0x15FFFFFF : 0x20FFFFFF;
                 int textColorPrimary = isDark ? 0xFFFFFFFF : 0xFF000000;
                 int textColorSecondary = isDark ? 0xFFCCCCCC : 0xFF333333;
 
@@ -526,9 +553,15 @@ public class MainHook implements IXposedHookLoadPackage {
                 innerShadow.setShape(GradientDrawable.RECTANGLE);
                 innerShadow.setCornerRadius(28);
 
+                GradientDrawable bottomShadow = new GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    new int[] { 0x00000000, isDark ? 0x18000000 : 0x12FFFFFF });
+                bottomShadow.setShape(GradientDrawable.RECTANGLE);
+                bottomShadow.setCornerRadius(28);
+
                 android.graphics.drawable.LayerDrawable glassBg =
                     new android.graphics.drawable.LayerDrawable(
-                        new android.graphics.drawable.Drawable[] { bg, topHighlight, bottomGlow, edgeGlow, innerShadow });
+                        new android.graphics.drawable.Drawable[] { bg, topHighlight, bottomGlow, edgeGlow, innerShadow, bottomShadow });
                 container.setBackground(glassBg);
                 container.setElevation(12);
 
@@ -579,7 +612,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         PendingIntent deleteIntent = notification.deleteIntent;
                         if (deleteIntent != null) deleteIntent.send();
                     } catch (Exception ignored) {}
-                    dismissOverlayAnimated();
+                    dismissOverlayAnimated(1);
                 });
                 container.addView(readBtn);
 
@@ -653,21 +686,21 @@ public class MainHook implements IXposedHookLoadPackage {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
                                     }
-                                    dismissOverlayAnimated(true); return true;
+                                    dismissOverlayAnimated(1); return true;
                                 }
                                 if (totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     if (mCurrentKey != null) {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
                                     }
-                                    dismissOverlayAnimated(false); return true;
+                                    dismissOverlayAnimated(0); return true;
                                 }
                                 if (totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     if (mCurrentKey != null) {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
                                     }
-                                    dismissOverlayAnimated(false); return true;
+                                    dismissOverlayAnimated(2); return true;
                                 }
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar(); removeOverlayImmediate(); return true;
@@ -682,7 +715,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                                 if (Math.abs(totalDx) < CLICK_THRESHOLD && Math.abs(totalDy) < CLICK_THRESHOLD) {
                                     performContentClick(contentIntent);
-                                    dismissOverlayAnimated();
+                                    dismissOverlayAnimated(1);
                                     return true;
                                 }
                                 startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
@@ -708,7 +741,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 mCurrentOverlay = container;
                 XposedBridge.log(TAG + ": Shown: " + title);
                 startEnterAnimation(container);
-                mAutoDismissRunnable = () -> dismissOverlayAnimated(true);
+                mAutoDismissRunnable = () -> dismissOverlayAnimated(1);
                 mHandler.postDelayed(mAutoDismissRunnable, AUTO_DISMISS_MS);
             } catch (Throwable t) {
                 XposedBridge.log(TAG + ": showCustomHeadsUp error: " + t);
@@ -749,9 +782,9 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {}
     }
 
-    private void dismissOverlayAnimated() { dismissOverlayAnimated(false); }
+    private void dismissOverlayAnimated() { dismissOverlayAnimated(1); }
 
-    private void dismissOverlayAnimated(final boolean slideUpward) {
+    private void dismissOverlayAnimated(final int exitDirection) {
         if (mHandler == null) return;
         mHandler.post(() -> {
             if (mAutoDismissRunnable != null) {
@@ -761,8 +794,56 @@ public class MainHook implements IXposedHookLoadPackage {
             if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
                 removeOverlayImmediate(); return;
             }
-            startExitAnimation(mCurrentOverlay, () -> removeOverlayImmediate(), slideUpward);
+            startExitAnimation(mCurrentOverlay, () -> removeOverlayImmediate(), exitDirection);
         });
+    }
+
+    private void showShieldOnly(String key) {
+        if (mContext == null || mWindowManager == null) return;
+        if (mShieldView != null && key.equals(mShieldKey)) return;
+        removeShieldOnly();
+        mHandler.post(() -> {
+            try {
+                View shield = new View(mContext);
+                shield.setBackgroundColor(0x00000000);
+                shield.setOnTouchListener((v, event) -> true);
+                WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                    WIN_W, WIN_H, WINDOW_TYPE,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    PixelFormat.TRANSLUCENT);
+                params.gravity = Gravity.TOP | Gravity.LEFT;
+                params.x = WIN_X;
+                params.y = WIN_Y;
+                mWindowManager.addView(shield, params);
+                mShieldView = shield;
+                mShieldKey = key;
+                XposedBridge.log(TAG + ": Shield shown for: " + key);
+                mShieldRemoveRunnable = () -> removeShieldOnly();
+                mHandler.postDelayed(mShieldRemoveRunnable, SHIELD_MAX_LIFE_MS);
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": showShieldOnly error: " + t);
+            }
+        });
+    }
+
+    private void removeShieldOnly() {
+        if (mShieldRemoveRunnable != null) {
+            mHandler.removeCallbacks(mShieldRemoveRunnable);
+            mShieldRemoveRunnable = null;
+        }
+        if (mShieldView != null) {
+            try {
+                if (mShieldView.getParent() != null) mWindowManager.removeView(mShieldView);
+            } catch (Throwable t) {
+                try { mWindowManager.removeViewImmediate(mShieldView); } catch (Throwable ignored) {}
+            }
+            mShieldView = null;
+            mShieldKey = null;
+            XposedBridge.log(TAG + ": Shield removed");
+        }
     }
 
     private void removeOverlayImmediate() {
@@ -801,5 +882,6 @@ public class MainHook implements IXposedHookLoadPackage {
         mCurrentRowView = null;
         mCurrentOverlay = null;
         mCurrentContentHash = null;
+        removeShieldOnly();
     }
 }
