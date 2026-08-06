@@ -92,9 +92,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private long mGlobalCooldownTime = 0;
     private static final long GLOBAL_COOLDOWN_MS = 1000;
-    private boolean mShieldActive = false;
-    private Runnable mShieldDismissRunnable = null;
-    private static final long SHIELD_HOLD_MS = 800;
+    // Shield 机制已删除（v26.8）
 
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -120,6 +118,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private TextView mTitleView = null;
     private TextView mTextView = null;
     private float mEnterProgress = 0f;
+    private final java.util.Set<String> mShownKeys = new java.util.HashSet<>();
     private Runnable mBgUpdateRunnable = null;
     private static final long BG_UPDATE_INTERVAL_MS = 500;
     private static final float BLUR_RADIUS = 22f;
@@ -134,9 +133,6 @@ public class MainHook implements IXposedHookLoadPackage {
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
         hookHeadsUpRowTouch(lpparam);
-        hookNotificationStackTouch(lpparam);
-        hookStatusBarWindowTouch(lpparam);
-        hookHeadsUpManagerTouch(lpparam);
         hookPanelExpansion(lpparam);
         captureHeadsUpManager(lpparam);
         captureStatusBar(lpparam);
@@ -272,6 +268,16 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    private boolean isOngoingNotification(StatusBarNotification sbn) {
+        if (sbn == null) return false;
+        try {
+            android.app.Notification n = sbn.getNotification();
+            if (n == null) return false;
+            return (n.flags & android.app.Notification.FLAG_ONGOING_EVENT) != 0
+                || (n.flags & android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0;
+        } catch (Throwable t) { return false; }
+    }
+
     private boolean isFreshNotification(StatusBarNotification sbn) {
         return System.currentTimeMillis() - sbn.getPostTime() <= NOTIFICATION_MAX_AGE_MS;
     }
@@ -311,11 +317,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void triggerGlobalCooldown() {
         mGlobalCooldownTime = SystemClock.elapsedRealtime();
-        mShieldActive = true;
-        if (mShieldDismissRunnable != null) {
-            mHandler.removeCallbacks(mShieldDismissRunnable);
-            mShieldDismissRunnable = null;
-        }
         if (mCurrentOverlay != null) removeOverlayImmediate();
     }
 
@@ -360,7 +361,14 @@ public class MainHook implements IXposedHookLoadPackage {
                             removeSystemNotificationView(key);
                             return;
                         }
+                        // 过滤规则（v26.8）：
+                        // 1. 保留新鲜度（8秒内）
+                        // 2. 不过滤消息等级（已删除重要性过滤）
+                        // 3. 已显示过的旧通知不再重复弹
+                        // 4. 过滤常驻通知（ONGOING_EVENT / FOREGROUND_SERVICE）
                         if (!isFreshNotification(sbn)) { param.setResult(null); return; }
+                        if (mShownKeys.contains(key)) { param.setResult(null); return; }
+                        if (isOngoingNotification(sbn)) { param.setResult(null); return; }
                         param.setResult(null);
                         if (mContext == null) {
                             mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
@@ -406,7 +414,14 @@ public class MainHook implements IXposedHookLoadPackage {
                             removeSystemNotificationView(key);
                             return;
                         }
+                        // 过滤规则（v26.8）：
+                        // 1. 保留新鲜度（8秒内）
+                        // 2. 不过滤消息等级（已删除重要性过滤）
+                        // 3. 已显示过的旧通知不再重复弹
+                        // 4. 过滤常驻通知（ONGOING_EVENT / FOREGROUND_SERVICE）
                         if (!isFreshNotification(sbn)) { param.setResult(null); return; }
+                        if (mShownKeys.contains(key)) { param.setResult(null); return; }
+                        if (isOngoingNotification(sbn)) { param.setResult(null); return; }
                         param.setResult(null);
                         if (mContext == null) {
                             mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
@@ -425,73 +440,19 @@ public class MainHook implements IXposedHookLoadPackage {
             Class<?> rowClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
                 lpparam.classLoader);
-
-            // 拦截1: onTouchEvent（直接触摸事件）
             XposedHelpers.findAndHookMethod(rowClass, "onTouchEvent", MotionEvent.class, new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (!mShieldActive && mCurrentKey == null) return;
+                    if (mCurrentKey == null) return;
                     try {
                         View rowView = (View) param.thisObject;
                         StatusBarNotification sbn = getSbnFromRow(rowView);
-                        if (sbn != null) {
-                            if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
-                                XposedBridge.log(TAG + ": onTouchEvent blocked by currentKey match");
-                                param.setResult(true); return;
-                            }
-                            if (mShieldActive) {
-                                XposedBridge.log(TAG + ": onTouchEvent blocked by shield");
-                                param.setResult(true); return;
-                            }
+                        if (sbn != null && mCurrentKey.equals(sbn.getKey())) {
+                            param.setResult(true);
                         }
                     } catch (Throwable t) {}
                 }
             });
-
-            // 拦截2: dispatchTouchEvent（事件分发入口，优先级更高）
-            XposedHelpers.findAndHookMethod(rowClass, "dispatchTouchEvent", MotionEvent.class, new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (!mShieldActive && mCurrentKey == null) return;
-                    try {
-                        View rowView = (View) param.thisObject;
-                        StatusBarNotification sbn = getSbnFromRow(rowView);
-                        if (sbn != null) {
-                            if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
-                                XposedBridge.log(TAG + ": dispatchTouchEvent blocked by currentKey match");
-                                param.setResult(true); return;
-                            }
-                            if (mShieldActive) {
-                                XposedBridge.log(TAG + ": dispatchTouchEvent blocked by shield");
-                                param.setResult(true); return;
-                            }
-                        }
-                    } catch (Throwable t) {}
-                }
-            });
-
-            // 拦截3: onInterceptTouchEvent（如果 ExpandableNotificationRow 是 ViewGroup）
-            try {
-                XposedHelpers.findAndHookMethod(rowClass, "onInterceptTouchEvent", MotionEvent.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        if (!mShieldActive && mCurrentKey == null) return;
-                        try {
-                            View rowView = (View) param.thisObject;
-                            StatusBarNotification sbn = getSbnFromRow(rowView);
-                            if (sbn != null) {
-                                if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
-                                    XposedBridge.log(TAG + ": onInterceptTouchEvent blocked by currentKey match");
-                                    param.setResult(true); return;
-                                }
-                                if (mShieldActive) {
-                                    XposedBridge.log(TAG + ": onInterceptTouchEvent blocked by shield");
-                                    param.setResult(true); return;
-                                }
-                            }
-                        } catch (Throwable t) {}
-                    }
-                });
-            } catch (Throwable ignored) {}
-
-            XposedBridge.log(TAG + ": HeadsUpRow 3-layer touch hook installed");
+            XposedBridge.log(TAG + ": HeadsUpRow touch hook installed");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": hookHeadsUpRowTouch failed: " + t);
         }
@@ -499,108 +460,8 @@ public class MainHook implements IXposedHookLoadPackage {
 
 
 
-    private void hookStatusBarWindowTouch(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 兜底拦截：StatusBarWindowView 级别的触摸（最上层窗口）
-        try {
-            Class<?> sbwvClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.StatusBarWindowView",
-                lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(sbwvClass, "dispatchTouchEvent",
-                MotionEvent.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        if (!mShieldActive) return;
-                        try {
-                            MotionEvent ev = (MotionEvent) param.args[0];
-                            // 只拦截屏幕顶部区域（Heads-Up 通知通常在此）
-                            if (ev.getY() < 250f) {
-                                // 检查是否点击在系统通知行上（通过查找子 View）
-                                ViewGroup window = (ViewGroup) param.thisObject;
-                                boolean hitNotificationRow = false;
-                                for (int i = 0; i < window.getChildCount(); i++) {
-                                    View child = window.getChildAt(i);
-                                    if (child != null && child.getClass().getName().contains("Notification")) {
-                                        int[] loc = new int[2];
-                                        child.getLocationOnScreen(loc);
-                                        if (ev.getRawX() >= loc[0] && ev.getRawX() <= loc[0] + child.getWidth()
-                                            && ev.getRawY() >= loc[1] && ev.getRawY() <= loc[1] + child.getHeight()) {
-                                            hitNotificationRow = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (hitNotificationRow) {
-                                    param.setResult(true);
-                                }
-                            }
-                        } catch (Throwable t) {}
-                    }
-                });
-            XposedBridge.log(TAG + ": StatusBarWindowView dispatchTouchEvent hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook StatusBarWindowView skipped: " + t); }
-    }
 
     
-    private void hookHeadsUpManagerTouch(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 兜底拦截：HeadsUpManager 级别的通知操作
-        try {
-            Class<?> humClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.policy.HeadsUpManager",
-                lpparam.classLoader);
-
-            // 拦截点击通知后的操作（防止系统触发 PendingIntent）
-            XposedBridge.hookAllMethods(humClass, "onHeadsUpViewClicked", new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (mShieldActive) {
-                        param.setResult(null);
-                        XposedBridge.log(TAG + ": HeadsUp click blocked by shield");
-                    }
-                }
-            });
-
-            // 拦截通知行的滑动操作
-            XposedBridge.hookAllMethods(humClass, "onHeadsUpViewSwipedUp", new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (mShieldActive) {
-                        param.setResult(null);
-                        XposedBridge.log(TAG + ": HeadsUp swipe blocked by shield");
-                    }
-                }
-            });
-
-            XposedBridge.log(TAG + ": HeadsUpManager operation hooks installed");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook HeadsUpManager ops skipped: " + t); }
-
-        // 拦截 NotificationClicker / NotificationActivityStarter
-        try {
-            Class<?> clickerClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.NotificationClicker",
-                lpparam.classLoader);
-            XposedBridge.hookAllMethods(clickerClass, "onClick", new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (mShieldActive) {
-                        param.setResult(null);
-                        XposedBridge.log(TAG + ": NotificationClicker blocked by shield");
-                    }
-                }
-            });
-            XposedBridge.log(TAG + ": NotificationClicker hook installed");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationClicker skipped: " + t); }
-
-        try {
-            Class<?> nasClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.NotificationActivityStarter",
-                lpparam.classLoader);
-            XposedBridge.hookAllMethods(nasClass, "startNotificationIntent", new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (mShieldActive) {
-                        param.setResult(null);
-                        XposedBridge.log(TAG + ": NotificationActivityStarter blocked by shield");
-                    }
-                }
-            });
-            XposedBridge.log(TAG + ": NotificationActivityStarter hook installed");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationActivityStarter skipped: " + t); }
-    }
 
     private void hookPanelExpansion(XC_LoadPackage.LoadPackageParam lpparam) {
         // 路径1: NotificationPanelViewController.onPanelExpansionChanged (Android 13 最常用)
@@ -751,50 +612,6 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
 
-    private void hookNotificationStackTouch(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 兜底拦截：NotificationStackScrollLayout 级别的触摸
-        try {
-            Class<?> stackClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
-                lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(stackClass, "onInterceptTouchEvent",
-                MotionEvent.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        if (!mShieldActive) return;
-                        try {
-                            MotionEvent ev = (MotionEvent) param.args[0];
-                            if (ev.getAction() == MotionEvent.ACTION_DOWN) {
-                                // 检查触摸位置是否在 Heads-Up 区域（屏幕顶部）
-                                if (ev.getY() < 250f) {
-                                    param.setResult(true);
-                                }
-                            }
-                        } catch (Throwable t) {}
-                    }
-                });
-            XposedBridge.log(TAG + ": NotificationStackScrollLayout touch hook installed");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationStackScrollLayout skipped: " + t); }
-
-        // 备用类名（不同 Android 版本）
-        try {
-            Class<?> stackClass2 = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.stack.NotificationStackScrollLayout",
-                lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(stackClass2, "onInterceptTouchEvent",
-                MotionEvent.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        if (!mShieldActive) return;
-                        try {
-                            MotionEvent ev = (MotionEvent) param.args[0];
-                            if (ev.getAction() == MotionEvent.ACTION_DOWN && ev.getY() < 250f) {
-                                param.setResult(true);
-                            }
-                        } catch (Throwable t) {}
-                    }
-                });
-            XposedBridge.log(TAG + ": NotificationStackScrollLayout(alt) touch hook installed");
-        } catch (Throwable t) {}
-    }
 
     private StatusBarNotification getSbnFromRow(View rowView) {
         try {
@@ -1313,12 +1130,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 params.y = WIN_Y;
 
                 mWindowManager.addView(root, params);
-                mShieldActive = true;
-                if (mShieldDismissRunnable != null) {
-                    mHandler.removeCallbacks(mShieldDismissRunnable);
-                    mShieldDismissRunnable = null;
-                }
                 mCurrentKey = key;
+                mShownKeys.add(key);
+                // 限制缓存大小，防止内存泄漏
+                if (mShownKeys.size() > 200) {
+                    java.util.Iterator<String> it = mShownKeys.iterator();
+                    int removeCount = 50;
+                    while (it.hasNext() && removeCount-- > 0) { it.next(); it.remove(); }
+                }
                 mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
 
@@ -1567,16 +1386,6 @@ public class MainHook implements IXposedHookLoadPackage {
         mCurrentRowView = null;
         mCurrentOverlay = null;
         mCurrentContentHash = null;
-        // 延迟关闭 Shield，防止系统通知行回收前被点击
-        if (mShieldDismissRunnable != null) {
-            mHandler.removeCallbacks(mShieldDismissRunnable);
-        }
-        mShieldDismissRunnable = () -> {
-            mShieldActive = false;
-            mShieldDismissRunnable = null;
-            XposedBridge.log(TAG + ": Shield deactivated after hold period");
-        };
-        mHandler.postDelayed(mShieldDismissRunnable, SHIELD_HOLD_MS);
     }
 
     private class LiquidGlassView extends View {
