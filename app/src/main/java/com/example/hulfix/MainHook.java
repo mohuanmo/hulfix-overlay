@@ -466,55 +466,108 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void startEnterAnimation(final View view) {
         cancelAllAnimations();
+        // 初始状态：完全看不见的圆点
         view.setAlpha(0f);
-        view.setTranslationY(-30f);
         view.setTranslationX(0f);
-        view.setScaleX(0.3f);
-        view.setScaleY(0.15f);
+        view.setTranslationY(0f);
+        view.setScaleX(0f);
+        view.setScaleY(0f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        // 内容层初始隐藏
+        if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0f); mIconView.setScaleY(0f); }
+        if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationX(-30f); }
+        if (mTextView != null) { mTextView.setAlpha(0f); }
+        // 背景模糊初始隐藏
+        if (mBgImageView != null) mBgImageView.setAlpha(0f);
+        // 圆角初始为圆形
+        if (mGlassView != null) mGlassView.setCornerRadius(WIN_H * 0.5f);
+
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(380);
+        mEnterAnim.setDuration(520);
         mEnterAnim.setInterpolator(null);
         mEnterAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            float alpha, transY, scaleX, scaleY;
-            if (t < 0.15f) {
-                // 阶段1：水滴凝聚（0~57ms）—— 从模糊光斑快速凝聚
-                float p = t / 0.15f;
-                float ease = p * p * (3f - 2f * p);
-                alpha = ease * 0.4f;
-                transY = -30f * (1f - ease);
-                scaleX = 0.3f + 0.5f * ease;
-                scaleY = 0.15f + 0.45f * ease;
-            } else if (t < 0.45f) {
-                // 阶段2：果冻甩出（57~171ms）—— 横向急速展开，纵向滞后
-                float p = (t - 0.15f) / 0.30f;
-                float ease = 1f - (1f - p) * (1f - p);
-                alpha = 0.4f + 0.5f * ease;
-                transY = -5f * (1f - ease);
-                scaleX = 0.8f + 0.45f * ease;
-                scaleY = 0.6f + 0.55f * ease;
+            mEnterProgress = t;
+            float containerAlpha, containerScale, cornerRadius;
+
+            // === 容器主体动画 ===
+            if (t < 0.08f) {
+                // 阶段1：圆点凝聚（0~42ms）
+                float p = t / 0.08f;
+                float ease = p * p;
+                containerAlpha = ease * 0.3f;
+                containerScale = ease * 0.15f;
+                cornerRadius = WIN_H * 0.5f;
+            } else if (t < 0.28f) {
+                // 阶段2：爆发膨胀到 overshoot（42~146ms）
+                float p = (t - 0.08f) / 0.20f;
+                float ease = 1f - (1f - p) * (1f - p) * (1f - p);
+                containerAlpha = 0.3f + ease * 0.7f;
+                containerScale = 0.15f + 1.0f * ease;
+                cornerRadius = WIN_H * 0.5f * (1f - ease * 0.85f) + 28f * (ease * 0.85f);
+            } else if (t < 0.55f) {
+                // 阶段3：弹性回弹（146~286ms）—— 阻尼弹簧 2~3次抖动
+                float p = (t - 0.28f) / 0.27f;
+                float decay = (float) Math.exp(-4.5f * p);
+                float oscillation = (float) Math.sin(p * Math.PI * 4.5f);
+                float bounce = decay * oscillation * 0.12f;
+                containerAlpha = 1f;
+                containerScale = 1.15f - 0.15f * p + bounce;
+                cornerRadius = 28f + (WIN_H * 0.08f) * decay * Math.abs(oscillation);
             } else if (t < 0.75f) {
-                // 阶段3：过冲回弹（171~285ms）—— 果冻感，稍微过头再回正
-                float p = (t - 0.45f) / 0.30f;
-                float overshoot = (float) Math.sin(p * Math.PI) * 0.06f;
-                alpha = 0.9f + 0.1f * p;
-                transY = overshoot * 20f;
-                scaleX = 1.25f - 0.25f * p + overshoot;
-                scaleY = 1.15f - 0.15f * p + overshoot * 0.5f;
+                // 阶段4：稳定收敛（286~390ms）
+                float p = (t - 0.55f) / 0.20f;
+                float ease = p * p * (3f - 2f * p);
+                containerAlpha = 1f;
+                containerScale = 1.0f;
+                cornerRadius = 28f + (WIN_H * 0.08f) * (1f - ease);
             } else {
-                // 阶段4：稳定波纹（285~380ms）—— 一道微颤波从中心向外扩散后消失
+                // 阶段5：稳定呼吸（390~520ms）
                 float p = (t - 0.75f) / 0.25f;
-                float ripple = (float) Math.sin(p * Math.PI * 2) * 0.015f * (1f - p);
-                alpha = 1f;
-                transY = ripple * 10f;
-                scaleX = 1.0f + ripple;
-                scaleY = 1.0f + ripple * 0.8f;
+                float breath = (float) Math.sin(p * Math.PI * 2) * 0.003f;
+                containerAlpha = 1f;
+                containerScale = 1.0f + breath;
+                cornerRadius = 28f;
             }
-            view.setAlpha(Math.min(1f, alpha));
-            view.setTranslationY(transY);
-            view.setScaleX(scaleX);
-            view.setScaleY(scaleY);
+
+            view.setAlpha(containerAlpha);
+            view.setScaleX(containerScale);
+            view.setScaleY(containerScale);
+            if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
+
+            // === 背景模糊淡入（膨胀到60%左右开始）===
+            if (mBgImageView != null) {
+                float bgAlpha = 0f;
+                if (t > 0.25f) {
+                    float bp = Math.min(1f, (t - 0.25f) / 0.35f);
+                    bgAlpha = bp * bp * (3f - 2f * bp);
+                }
+                mBgImageView.setAlpha(bgAlpha);
+            }
+
+            // === 内容 Stagger ===
+            // 图标：t=0.18 开始弹出（94ms）
+            if (mIconView != null && t > 0.18f) {
+                float ip = Math.min(1f, (t - 0.18f) / 0.18f);
+                float iease = 1f - (1f - ip) * (1f - ip) * (1f - ip);
+                float ibounce = (float) Math.sin(ip * Math.PI) * 0.15f;
+                mIconView.setAlpha(iease);
+                mIconView.setScaleX(iease + ibounce);
+                mIconView.setScaleY(iease + ibounce);
+            }
+            // 标题：t=0.30 开始从左滑入（156ms）
+            if (mTitleView != null && t > 0.30f) {
+                float tp = Math.min(1f, (t - 0.30f) / 0.20f);
+                float tease = tp * tp * (3f - 2f * tp);
+                mTitleView.setAlpha(tease);
+                mTitleView.setTranslationX(-30f * (1f - tease));
+            }
+            // 内容文字：t=0.42 开始淡入（218ms）
+            if (mTextView != null && t > 0.42f) {
+                float cp = Math.min(1f, (t - 0.42f) / 0.18f);
+                float cease = cp * cp * (3f - 2f * cp);
+                mTextView.setAlpha(cease);
+            }
         });
         mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -522,9 +575,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 mEnterAnim = null;
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
                 view.setAlpha(1f);
-                view.setTranslationY(0f);
                 view.setScaleX(1f);
                 view.setScaleY(1f);
+                mEnterProgress = 1f;
+                if (mBgImageView != null) mBgImageView.setAlpha(1f);
+                if (mIconView != null) { mIconView.setAlpha(1f); mIconView.setScaleX(1f); mIconView.setScaleY(1f); }
+                if (mTitleView != null) { mTitleView.setAlpha(1f); mTitleView.setTranslationX(0f); }
+                if (mTextView != null) mTextView.setAlpha(1f);
+                if (mGlassView != null) mGlassView.setCornerRadius(28f);
             }
         });
         mEnterAnim.start();
@@ -533,54 +591,57 @@ public class MainHook implements IXposedHookLoadPackage {
     private void startExitAnimation(final View view, final Runnable onEnd, final int exitDirection) {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        // 内容先收回（Stagger 反向）
+        if (mTextView != null) mTextView.animate().alpha(0f).setDuration(60).start();
+        if (mTitleView != null) mTitleView.animate().alpha(0f).translationX(-15f).setDuration(80).setStartDelay(30).start();
+        if (mIconView != null) mIconView.animate().alpha(0f).scaleX(0.5f).scaleY(0.5f).setDuration(80).setStartDelay(60).start();
+        if (mBgImageView != null) mBgImageView.animate().alpha(0f).setDuration(100).start();
+
         mExitAnim = ValueAnimator.ofFloat(0f, 1f);
-        mExitAnim.setDuration(220);
+        mExitAnim.setDuration(280);
         mExitAnim.setInterpolator(null);
         mExitAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            float alpha, scaleX, scaleY, transX, transY;
-            if (t < 0.3f) {
-                // 阶段1：回缩凝聚（0~66ms）—— 像冰块收缩，稍微往内收一点
-                float p = t / 0.3f;
+            float alpha, scale, cornerRadius, transX, transY;
+            if (t < 0.25f) {
+                // 阶段1：吸一下（0~70ms）
+                float p = t / 0.25f;
                 float ease = p * p;
-                alpha = 1f - ease * 0.15f;
-                scaleX = 1f - ease * 0.08f;
-                scaleY = 1f - ease * 0.12f;
+                alpha = 1f - ease * 0.1f;
+                scale = 1f - ease * 0.12f;
+                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * ease * 0.3f;
+                transX = 0f; transY = 0f;
+            } else if (t < 0.65f) {
+                // 阶段2：缩成圆点（70~182ms）
+                float p = (t - 0.25f) / 0.40f;
+                float ease = p * p * p;
+                alpha = 0.9f - ease * 0.7f;
+                scale = 0.88f - ease * 0.88f;
+                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * (0.3f + ease * 0.7f);
                 switch (exitDirection) {
-                    case 1: transX = 0f; transY = -8f * ease; break;
-                    case 2: transX = 8f * ease; transY = 0f; break;
-                    default: transX = -8f * ease; transY = 0f; break;
-                }
-            } else if (t < 0.6f) {
-                // 阶段2：雾气散开（66~132ms）—— 快速透明 + 轻微放大后收缩
-                float p = (t - 0.3f) / 0.3f;
-                float ease = p * p;
-                alpha = 0.85f - ease * 0.55f;
-                scaleX = 0.92f + ease * 0.06f;
-                scaleY = 0.88f + ease * 0.04f;
-                switch (exitDirection) {
-                    case 1: transX = 0f; transY = -8f - 30f * ease; break;
-                    case 2: transX = 8f + 30f * ease; transY = 0f; break;
-                    default: transX = -8f - 30f * ease; transY = 0f; break;
+                    case 1: transX = 0f; transY = -10f * ease; break;
+                    case 2: transX = 10f * ease; transY = 0f; break;
+                    default: transX = -10f * ease; transY = 0f; break;
                 }
             } else {
-                // 阶段3：嗤的一下消失（132~220ms）—— 瞬间透明，像雾气被风吹散
-                float p = (t - 0.6f) / 0.4f;
-                float ease = p * p * p;
-                alpha = 0.3f * (1f - ease);
-                scaleX = 0.98f - ease * 0.08f;
-                scaleY = 0.92f - ease * 0.15f;
+                // 阶段3："啵"地消失（182~280ms）
+                float p = (t - 0.65f) / 0.35f;
+                float ease = p * p * p * p;
+                alpha = 0.2f * (1f - ease);
+                scale = ease * 0.02f;
+                cornerRadius = WIN_H * 0.5f;
                 switch (exitDirection) {
-                    case 1: transX = 0f; transY = -38f - 60f * ease; break;
-                    case 2: transX = 38f + 60f * ease; transY = 0f; break;
-                    default: transX = -38f - 60f * ease; transY = 0f; break;
+                    case 1: transX = 0f; transY = -10f - 20f * ease; break;
+                    case 2: transX = 10f + 20f * ease; transY = 0f; break;
+                    default: transX = -10f - 20f * ease; transY = 0f; break;
                 }
             }
             view.setAlpha(Math.max(0f, alpha));
-            view.setScaleX(scaleX);
-            view.setScaleY(scaleY);
+            view.setScaleX(Math.max(0.01f, scale));
+            view.setScaleY(Math.max(0.01f, scale));
             view.setTranslationX(transX);
             view.setTranslationY(transY);
+            if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -597,13 +658,14 @@ public class MainHook implements IXposedHookLoadPackage {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mBounceAnim = ValueAnimator.ofFloat(0f, 1f);
-        mBounceAnim.setDuration(350);
+        mBounceAnim.setDuration(450);
         mBounceAnim.setInterpolator(null);
         mBounceAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            float decay = (float) Math.exp(-6 * t);
-            float oscillation = (float) Math.sin(t * Math.PI * 3.5);
-            float offset = 22f * decay * oscillation * direction;
+            // 强果冻感：衰减更慢，振荡更多（2.5个周期）
+            float decay = (float) Math.exp(-4 * t);
+            float oscillation = (float) Math.sin(t * Math.PI * 5);
+            float offset = 28f * decay * oscillation * direction;
             view.setTranslationX(offset);
             view.setAlpha(1f);
         });
