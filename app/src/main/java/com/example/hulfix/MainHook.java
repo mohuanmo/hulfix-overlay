@@ -819,34 +819,52 @@ public class MainHook implements IXposedHookLoadPackage {
     private void startEnterAnimation(final View view) {
         cancelAllAnimations();
         view.setAlpha(0f);
-        view.setTranslationY(-60f);
+        view.setTranslationY(-30f);
         view.setTranslationX(0f);
-        view.setScaleX(0.1f);
-        view.setScaleY(0.2f);
+        view.setScaleX(0.3f);
+        view.setScaleY(0.15f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(280);
-        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.0f));
+        mEnterAnim.setDuration(380);
+        mEnterAnim.setInterpolator(null);
         mEnterAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            float decel = 1f - (1f - t) * (1f - t);
-            float scaleX, scaleY;
-            if (t < 0.35f) {
-                float p = t / 0.35f;
-                scaleX = 0.1f + 1.05f * p;
-                scaleY = 0.2f + 0.3f * p;
-            } else if (t < 0.7f) {
-                float p = (t - 0.35f) / 0.35f;
-                scaleX = 1.15f - 0.15f * p;
-                scaleY = 0.5f + 0.55f * p;
+            float alpha, transY, scaleX, scaleY;
+            if (t < 0.15f) {
+                // 阶段1：水滴凝聚（0~57ms）—— 从模糊光斑快速凝聚
+                float p = t / 0.15f;
+                float ease = p * p * (3f - 2f * p);
+                alpha = ease * 0.4f;
+                transY = -30f * (1f - ease);
+                scaleX = 0.3f + 0.5f * ease;
+                scaleY = 0.15f + 0.45f * ease;
+            } else if (t < 0.45f) {
+                // 阶段2：果冻甩出（57~171ms）—— 横向急速展开，纵向滞后
+                float p = (t - 0.15f) / 0.30f;
+                float ease = 1f - (1f - p) * (1f - p);
+                alpha = 0.4f + 0.5f * ease;
+                transY = -5f * (1f - ease);
+                scaleX = 0.8f + 0.45f * ease;
+                scaleY = 0.6f + 0.55f * ease;
+            } else if (t < 0.75f) {
+                // 阶段3：过冲回弹（171~285ms）—— 果冻感，稍微过头再回正
+                float p = (t - 0.45f) / 0.30f;
+                float overshoot = (float) Math.sin(p * Math.PI) * 0.06f;
+                alpha = 0.9f + 0.1f * p;
+                transY = overshoot * 20f;
+                scaleX = 1.25f - 0.25f * p + overshoot;
+                scaleY = 1.15f - 0.15f * p + overshoot * 0.5f;
             } else {
-                float p = (t - 0.7f) / 0.3f;
-                float bounce = (float) Math.sin(p * Math.PI) * 0.02f;
-                scaleX = 1.0f + bounce;
-                scaleY = 1.05f - 0.05f * p + bounce;
+                // 阶段4：稳定波纹（285~380ms）—— 一道微颤波从中心向外扩散后消失
+                float p = (t - 0.75f) / 0.25f;
+                float ripple = (float) Math.sin(p * Math.PI * 2) * 0.015f * (1f - p);
+                alpha = 1f;
+                transY = ripple * 10f;
+                scaleX = 1.0f + ripple;
+                scaleY = 1.0f + ripple * 0.8f;
             }
-            view.setAlpha(decel);
-            view.setTranslationY(-60f * (1f - decel));
+            view.setAlpha(Math.min(1f, alpha));
+            view.setTranslationY(transY);
             view.setScaleX(scaleX);
             view.setScaleY(scaleY);
         });
@@ -855,6 +873,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (mEnterAnim == null) return;
                 mEnterAnim = null;
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
+                view.setAlpha(1f);
+                view.setTranslationY(0f);
                 view.setScaleX(1f);
                 view.setScaleY(1f);
             }
@@ -866,17 +886,53 @@ public class MainHook implements IXposedHookLoadPackage {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mExitAnim = ValueAnimator.ofFloat(0f, 1f);
-        mExitAnim.setDuration(180);
-        mExitAnim.setInterpolator(new DecelerateInterpolator(1.5f));
+        mExitAnim.setDuration(220);
+        mExitAnim.setInterpolator(null);
         mExitAnim.addUpdateListener(anim -> {
-            float ease = (float) anim.getAnimatedValue();
-            float realEase = ease * ease;
-            view.setAlpha(1f - realEase);
-            switch (exitDirection) {
-                case 1: view.setTranslationY(-120f * realEase); view.setTranslationX(0f); break;
-                case 2: view.setTranslationX(120f * realEase); view.setTranslationY(0f); break;
-                default: view.setTranslationX(-120f * realEase); view.setTranslationY(0f); break;
+            float t = (float) anim.getAnimatedValue();
+            float alpha, scaleX, scaleY, transX, transY;
+            if (t < 0.3f) {
+                // 阶段1：回缩凝聚（0~66ms）—— 像冰块收缩，稍微往内收一点
+                float p = t / 0.3f;
+                float ease = p * p;
+                alpha = 1f - ease * 0.15f;
+                scaleX = 1f - ease * 0.08f;
+                scaleY = 1f - ease * 0.12f;
+                switch (exitDirection) {
+                    case 1: transX = 0f; transY = -8f * ease; break;
+                    case 2: transX = 8f * ease; transY = 0f; break;
+                    default: transX = -8f * ease; transY = 0f; break;
+                }
+            } else if (t < 0.6f) {
+                // 阶段2：雾气散开（66~132ms）—— 快速透明 + 轻微放大后收缩
+                float p = (t - 0.3f) / 0.3f;
+                float ease = p * p;
+                alpha = 0.85f - ease * 0.55f;
+                scaleX = 0.92f + ease * 0.06f;
+                scaleY = 0.88f + ease * 0.04f;
+                switch (exitDirection) {
+                    case 1: transX = 0f; transY = -8f - 30f * ease; break;
+                    case 2: transX = 8f + 30f * ease; transY = 0f; break;
+                    default: transX = -8f - 30f * ease; transY = 0f; break;
+                }
+            } else {
+                // 阶段3：嗤的一下消失（132~220ms）—— 瞬间透明，像雾气被风吹散
+                float p = (t - 0.6f) / 0.4f;
+                float ease = p * p * p;
+                alpha = 0.3f * (1f - ease);
+                scaleX = 0.98f - ease * 0.08f;
+                scaleY = 0.92f - ease * 0.15f;
+                switch (exitDirection) {
+                    case 1: transX = 0f; transY = -38f - 60f * ease; break;
+                    case 2: transX = 38f + 60f * ease; transY = 0f; break;
+                    default: transX = -38f - 60f * ease; transY = 0f; break;
+                }
             }
+            view.setAlpha(Math.max(0f, alpha));
+            view.setScaleX(scaleX);
+            view.setScaleY(scaleY);
+            view.setTranslationX(transX);
+            view.setTranslationY(transY);
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -1007,24 +1063,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 textContainer.addView(contentView);
                 contentContainer.addView(textContainer);
 
-                TextView readBtn = new TextView(mContext);
-                readBtn.setText("已读");
-                readBtn.setTextColor(0xFF64B5F6);
-                readBtn.setTextSize(12);
-                readBtn.setPadding(12, 4, 12, 4);
-                LinearLayout.LayoutParams readLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                readLp.gravity = Gravity.CENTER_VERTICAL;
-                readBtn.setLayoutParams(readLp);
-                readBtn.setOnClickListener(v -> {
-                    try {
-                        PendingIntent deleteIntent = notification.deleteIntent;
-                        if (deleteIntent != null) deleteIntent.send();
-                    } catch (Exception ignored) {}
-                    dismissOverlayAnimated(1);
-                });
-                contentContainer.addView(readBtn);
-
                 root.addView(contentContainer);
                 mContentView = contentContainer;
 
@@ -1064,6 +1102,11 @@ public class MainHook implements IXposedHookLoadPackage {
                                 else { v.setTranslationX(dx); v.setTranslationY(dy); }
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 v.setAlpha(Math.max(0.5f, 1f - dist / 300f));
+                                // 同步移动整个 root（玻璃+背景+文字一起动）
+                                if (mCurrentOverlay != null) {
+                                    mCurrentOverlay.setTranslationX(dx);
+                                    mCurrentOverlay.setTranslationY(dy);
+                                }
                                 if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), Math.min(1.0f, dist / 80f));
                                 return true;
                             case MotionEvent.ACTION_CANCEL:
@@ -1076,10 +1119,18 @@ public class MainHook implements IXposedHookLoadPackage {
                                 v.setTranslationX(0f);
                                 v.setTranslationY(0f);
                                 v.setAlpha(1f);
+                                if (mCurrentOverlay != null) {
+                                    mCurrentOverlay.setTranslationX(0f);
+                                    mCurrentOverlay.setTranslationY(0f);
+                                }
                                 if (mGlassView != null) mGlassView.clearTouchPoint();
                                 return true;
                             case MotionEvent.ACTION_UP:
                                 if (mGlassView != null) mGlassView.clearTouchPoint();
+                                if (mCurrentOverlay != null) {
+                                    mCurrentOverlay.setTranslationX(0f);
+                                    mCurrentOverlay.setTranslationY(0f);
+                                }
                                 v.animate().scaleX(1f).scaleY(1f)
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
                                 float totalDx = event.getRawX() - startX;
