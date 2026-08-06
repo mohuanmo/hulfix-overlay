@@ -99,18 +99,15 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float BLUR_RADIUS = 10f;
     private static final int BLUR_SCALE_FACTOR = 4;
 
-    private View mShieldView = null;
-    private String mShieldKey = null;
-    private Runnable mShieldRemoveRunnable = null;
-    private static final long SHIELD_MAX_LIFE_MS = 10000;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v25 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v26 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
+        hookHeadsUpRowTouch(lpparam);
         captureHeadsUpManager(lpparam);
         captureStatusBar(lpparam);
     }
@@ -203,17 +200,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook PanelViewController skipped: " + t); }
-            try {
-                XposedBridge.hookAllMethods(statusBarClass, "removeNotification", new XC_MethodHook() {
-                    @Override protected void afterHookedMethod(MethodHookParam param) {
-                        String removedKey = null;
-                        try { removedKey = (String) param.args[0]; } catch (Throwable ignored) {}
-                        if (removedKey != null && removedKey.equals(mShieldKey)) {
-                            removeShieldOnly();
-                        }
-                    }
-                });
-            } catch (Throwable t) { XposedBridge.log(TAG + ": hook removeNotification skipped: " + t); }
+
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": StatusBar hooks failed: " + t);
         }
@@ -324,7 +311,8 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (key.equals(mCurrentKey) && mCurrentOverlay != null) { param.setResult(null); return; }
                         if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
                             param.setResult(null);
-                            showShieldOnly(key);
+                            removeSystemHeadsUpEntry(key);
+                            removeSystemNotificationView(key);
                             return;
                         }
                         if (!isFreshNotification(sbn)) { param.setResult(null); return; }
@@ -368,7 +356,8 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (key.equals(mCurrentKey) && mCurrentOverlay != null) { param.setResult(null); return; }
                         if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
                             param.setResult(null);
-                            showShieldOnly(key);
+                            removeSystemHeadsUpEntry(key);
+                            removeSystemNotificationView(key);
                             return;
                         }
                         if (!isFreshNotification(sbn)) { param.setResult(null); return; }
@@ -383,6 +372,29 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             });
         } catch (Throwable t) { XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook failed: " + t); }
+    }
+
+    private void hookHeadsUpRowTouch(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> rowClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
+                lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(rowClass, "onTouchEvent", MotionEvent.class, new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (mCurrentKey == null) return;
+                    try {
+                        View rowView = (View) param.thisObject;
+                        StatusBarNotification sbn = getSbnFromRow(rowView);
+                        if (sbn != null && mCurrentKey.equals(sbn.getKey())) {
+                            param.setResult(true);
+                        }
+                    } catch (Throwable t) {}
+                }
+            });
+            XposedBridge.log(TAG + ": HeadsUpRow touch hook installed");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": hookHeadsUpRowTouch failed: " + t);
+        }
     }
 
     private StatusBarNotification getSbnFromRow(View rowView) {
@@ -978,54 +990,6 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void showShieldOnly(String key) {
-        if (mContext == null || mWindowManager == null) return;
-        if (mShieldView != null && key.equals(mShieldKey)) return;
-        removeShieldOnly();
-        mHandler.post(() -> {
-            try {
-                View shield = new View(mContext);
-                shield.setBackgroundColor(0x00000000);
-                shield.setOnTouchListener((v, event) -> true);
-                WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WIN_W, WIN_H, WINDOW_TYPE,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                    PixelFormat.TRANSLUCENT);
-                params.gravity = Gravity.TOP | Gravity.LEFT;
-                params.x = WIN_X;
-                params.y = WIN_Y;
-                mWindowManager.addView(shield, params);
-                mShieldView = shield;
-                mShieldKey = key;
-                XposedBridge.log(TAG + ": Shield shown for: " + key);
-                mShieldRemoveRunnable = () -> removeShieldOnly();
-                mHandler.postDelayed(mShieldRemoveRunnable, SHIELD_MAX_LIFE_MS);
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": showShieldOnly error: " + t);
-            }
-        });
-    }
-
-    private void removeShieldOnly() {
-        if (mShieldRemoveRunnable != null) {
-            mHandler.removeCallbacks(mShieldRemoveRunnable);
-            mShieldRemoveRunnable = null;
-        }
-        if (mShieldView != null) {
-            try {
-                if (mShieldView.getParent() != null) mWindowManager.removeView(mShieldView);
-            } catch (Throwable t) {
-                try { mWindowManager.removeViewImmediate(mShieldView); } catch (Throwable ignored) {}
-            }
-            mShieldView = null;
-            mShieldKey = null;
-            XposedBridge.log(TAG + ": Shield removed");
-        }
-    }
-
     private void removeOverlayImmediate() {
         cancelAllAnimations();
         stopBackgroundUpdate();
@@ -1069,6 +1033,5 @@ public class MainHook implements IXposedHookLoadPackage {
         mCurrentRowView = null;
         mCurrentOverlay = null;
         mCurrentContentHash = null;
-        removeShieldOnly();
     }
 }
