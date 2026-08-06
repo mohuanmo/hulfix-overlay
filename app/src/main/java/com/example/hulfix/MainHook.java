@@ -68,7 +68,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float PULLDOWN_THRESHOLD = 120f;
     private static final float DIRECTION_LOCK_SLOP = 25f;
     private static final float MIN_FLING_VELOCITY = 200f;
-    private static final long SHIELD_DELAY_MS = 400;
     private static final float SWIPE_INTENT_THRESHOLD = 40f;
     private static final float CLICK_THRESHOLD = 12f;
 
@@ -92,9 +91,8 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private long mGlobalCooldownTime = 0;
     private static final long GLOBAL_COOLDOWN_MS = 1000;
-    // Shield 机制已删除（v26.8）
 
-    // mHeadsUpManager 已删除（v26.9 新架构不依赖 Heads-Up）
+    private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
 
     private BroadcastReceiver mScreenReceiver = null;
@@ -114,11 +112,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private ImageView mBgImageView = null;
     private LiquidGlassView mGlassView = null;
     private Bitmap mBlurredBgBitmap = null;
-    private ImageView mIconView = null;
-    private TextView mTitleView = null;
-    private TextView mTextView = null;
-    private float mEnterProgress = 0f;
-    private final java.util.Set<String> mShownKeys = new java.util.HashSet<>();
     private Runnable mBgUpdateRunnable = null;
     private static final long BG_UPDATE_INTERVAL_MS = 500;
     private static final float BLUR_RADIUS = 22f;
@@ -130,11 +123,22 @@ public class MainHook implements IXposedHookLoadPackage {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
         XposedBridge.log(TAG + ": ====== HULFix Overlay v26 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
-        hookNotificationEntry(lpparam);
-        hookHeadsUpRowTouch(lpparam);
         hookPanelExpansion(lpparam);
+        captureHeadsUpManager(lpparam);
+        captureStatusBar(lpparam);
+    }
+
+    private void captureHeadsUpManager(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            captureStatusBar(lpparam);
+            Class<?> headsUpClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.policy.HeadsUpManager", lpparam.classLoader);
+            XposedBridge.hookAllMethods(headsUpClass, "addNotification",
+                new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        mHeadsUpManager = param.thisObject;
+                    }
+                });
+            XposedBridge.log(TAG + ": HeadsUpManager capture hooked");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": HeadsUpManager capture failed: " + t);
         }
@@ -218,17 +222,6 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-
-    private boolean isOngoingNotification(StatusBarNotification sbn) {
-        if (sbn == null) return false;
-        try {
-            android.app.Notification n = sbn.getNotification();
-            if (n == null) return false;
-            return (n.flags & android.app.Notification.FLAG_ONGOING_EVENT) != 0
-                || (n.flags & android.app.Notification.FLAG_FOREGROUND_SERVICE) != 0;
-        } catch (Throwable t) { return false; }
-    }
-
     private boolean isFreshNotification(StatusBarNotification sbn) {
         return System.currentTimeMillis() - sbn.getPostTime() <= NOTIFICATION_MAX_AGE_MS;
     }
@@ -285,282 +278,6 @@ public class MainHook implements IXposedHookLoadPackage {
             mBroadcastRegistered = true;
         } catch (Throwable t) {}
     }
-
-
-    // === 新架构：直接监听通知进入系统，不依赖 Heads-Up 触发 ===
-    private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 路径0: NotificationListener.onNotificationPosted (最上游、最可靠)
-        try {
-            Class<?> listenerClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.NotificationListener",
-                lpparam.classLoader);
-            XposedBridge.hookAllMethods(listenerClass, "onNotificationPosted", new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted triggered");
-                    handleNewNotification(lpparam, param);
-                }
-            });
-            XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationListener.onNotificationPosted skipped: " + t); }
-
-        // 路径1: NotificationEntryManager.addNotification (Android 13 常用)
-        try {
-            Class<?> nemClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.collection.NotificationEntryManager",
-                lpparam.classLoader);
-            XposedBridge.hookAllMethods(nemClass, "addNotification", new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + ": NotificationEntryManager.addNotification triggered");
-                    handleNewNotification(lpparam, param);
-                }
-            });
-            XposedBridge.log(TAG + ": NotificationEntryManager.addNotification hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationEntryManager.addNotification skipped: " + t); }
-
-        // 路径2: 备用类名
-        try {
-            Class<?> nemClass2 = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.NotificationEntryManager",
-                lpparam.classLoader);
-            XposedBridge.hookAllMethods(nemClass2, "addNotification", new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + ": NotificationEntryManager(alt).addNotification triggered");
-                    handleNewNotification(lpparam, param);
-                }
-            });
-            XposedBridge.log(TAG + ": NotificationEntryManager(alt).addNotification hooked");
-        } catch (Throwable t) {}
-
-        // 路径3: StatusBar.addNotification
-        try {
-            Class<?> sbClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
-            XposedBridge.hookAllMethods(sbClass, "addNotification", new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + ": StatusBar.addNotification triggered");
-                    handleNewNotification(lpparam, param);
-                }
-            });
-            XposedBridge.log(TAG + ": StatusBar.addNotification hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook StatusBar.addNotification skipped: " + t); }
-
-        // 路径4: CommonNotifCollection.addEntry
-        try {
-            Class<?> cncClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.collection.notifcollection.CommonNotifCollection",
-                lpparam.classLoader);
-            XposedBridge.hookAllMethods(cncClass, "addEntry", new XC_MethodHook() {
-                @Override protected void afterHookedMethod(MethodHookParam param) {
-                    XposedBridge.log(TAG + ": CommonNotifCollection.addEntry triggered");
-                    handleNewNotification(lpparam, param);
-                }
-            });
-            XposedBridge.log(TAG + ": CommonNotifCollection.addEntry hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook CommonNotifCollection.addEntry skipped: " + t); }
-    }
-
-    private void handleNewNotification(XC_LoadPackage.LoadPackageParam lpparam, XC_MethodHook.MethodHookParam param) {
-        try {
-            XposedBridge.log(TAG + ">>> handleNewNotification called");
-
-            if (mContext == null) {
-                XposedBridge.log(TAG + ">>> mContext is null, trying to get from StatusBar");
-                mContext = (Context) XposedHelpers.callMethod(
-                    XposedHelpers.findClass("com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader),
-                    "getContext");
-                if (mContext == null) {
-                    XposedBridge.log(TAG + ">>> FAILED: StatusBar.getContext() returned null");
-                    return;
-                }
-                mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
-                XposedBridge.log(TAG + ">>> mContext initialized successfully");
-            }
-
-            if (!isLandscape()) {
-                XposedBridge.log(TAG + ">>> Filtered: not landscape");
-                return;
-            }
-            if (isStatusBarExpanded()) {
-                XposedBridge.log(TAG + ">>> Filtered: status bar expanded");
-                return;
-            }
-            if (isGlobalCooldown()) {
-                XposedBridge.log(TAG + ">>> Filtered: global cooldown");
-                return;
-            }
-
-            StatusBarNotification sbn = extractSbnFromParam(param);
-            if (sbn == null) {
-                XposedBridge.log(TAG + ">>> Filtered: sbn is NULL, extract failed!");
-                return;
-            }
-
-            String pkg = sbn.getPackageName();
-            String key = sbn.getKey();
-            String title = "";
-            try {
-                title = sbn.getNotification().extras.getString(android.app.Notification.EXTRA_TITLE, "");
-            } catch (Throwable e) {}
-            XposedBridge.log(TAG + ">>> sbn extracted: pkg=" + pkg + " key=" + key + " title=" + title);
-
-            if (BLOCK_PKG.equals(pkg)) {
-                XposedBridge.log(TAG + ">>> Filtered: blocked package " + pkg);
-                return;
-            }
-
-            // 过滤规则
-            if (!isFreshNotification(sbn)) {
-                XposedBridge.log(TAG + ">>> Filtered: not fresh (too old)");
-                return;
-            }
-            if (mShownKeys.contains(key)) {
-                XposedBridge.log(TAG + ">>> Filtered: already shown key=" + key);
-                return;
-            }
-            if (isOngoingNotification(sbn)) {
-                XposedBridge.log(TAG + ">>> Filtered: ongoing notification");
-                return;
-            }
-
-            // 检查是否已有相同内容的通知正在显示
-            String contentHash = buildContentHash(sbn);
-            if (contentHash.equals(mCurrentContentHash)) {
-                XposedBridge.log(TAG + ">>> Filtered: same content hash");
-                return;
-            }
-
-            XposedBridge.log(TAG + ">>> PASSED all filters, showing heads-up for " + pkg);
-            // 横屏 + 新通知 → 直接弹自定义悬浮窗
-            mCurrentRowView = null;
-            showCustomHeadsUp(sbn);
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": handleNewNotification error: " + t);
-        }
-    }
-    private StatusBarNotification extractSbnFromParam(XC_MethodHook.MethodHookParam param) {
-        try {
-            XposedBridge.log(TAG + ": extractSbnFromParam called, args.length=" + (param.args != null ? param.args.length : 0));
-
-            // 策略1: 直接遍历 args 找 StatusBarNotification
-            if (param.args != null) {
-                for (int i = 0; i < param.args.length; i++) {
-                    Object arg = param.args[i];
-                    XposedBridge.log(TAG + ": arg[" + i + "] type=" + (arg != null ? arg.getClass().getName() : "null"));
-                    if (arg instanceof StatusBarNotification) {
-                        XposedBridge.log(TAG + ": Found sbn in args[" + i + "]");
-                        return (StatusBarNotification) arg;
-                    }
-                }
-            }
-
-            // 策略2: 检查 param.result
-            if (param.result != null) {
-                XposedBridge.log(TAG + ": result type=" + param.result.getClass().getName());
-                if (param.result instanceof StatusBarNotification) {
-                    XposedBridge.log(TAG + ": Found sbn in param.result");
-                    return (StatusBarNotification) param.result;
-                }
-            }
-
-            // 策略3: args[0] 可能是 NotificationEntry，尝试反射获取 sbn
-            if (param.args != null && param.args.length > 0 && param.args[0] != null) {
-                Object entry = param.args[0];
-                String entryClass = entry.getClass().getName();
-                XposedBridge.log(TAG + ": Trying to extract sbn from entry class=" + entryClass);
-
-                // 3a: 尝试 getSbn() 方法
-                try {
-                    Object notif = XposedHelpers.callMethod(entry, "getSbn");
-                    if (notif instanceof StatusBarNotification) {
-                        XposedBridge.log(TAG + ": Found sbn via entry.getSbn()");
-                        return (StatusBarNotification) notif;
-                    }
-                } catch (Throwable e) { XposedBridge.log(TAG + ": getSbn() failed: " + e); }
-
-                // 3b: 尝试 mSbn 字段
-                try {
-                    Object notif2 = XposedHelpers.getObjectField(entry, "mSbn");
-                    if (notif2 instanceof StatusBarNotification) {
-                        XposedBridge.log(TAG + ": Found sbn via entry.mSbn");
-                        return (StatusBarNotification) notif2;
-                    }
-                } catch (Throwable e) { XposedBridge.log(TAG + ": mSbn field failed: " + e); }
-
-                // 3c: 尝试 sbn 字段 (LineageOS 可能用不同命名)
-                try {
-                    Object notif3 = XposedHelpers.getObjectField(entry, "sbn");
-                    if (notif3 instanceof StatusBarNotification) {
-                        XposedBridge.log(TAG + ": Found sbn via entry.sbn");
-                        return (StatusBarNotification) notif3;
-                    }
-                } catch (Throwable e) { XposedBridge.log(TAG + ": sbn field failed: " + e); }
-
-                // 3d: 尝试 notification 字段
-                try {
-                    Object notif4 = XposedHelpers.getObjectField(entry, "notification");
-                    if (notif4 instanceof StatusBarNotification) {
-                        XposedBridge.log(TAG + ": Found sbn via entry.notification");
-                        return (StatusBarNotification) notif4;
-                    }
-                } catch (Throwable e) { XposedBridge.log(TAG + ": notification field failed: " + e); }
-
-                // 3e: 遍历 entry 的所有方法，找返回 StatusBarNotification 的
-                try {
-                    java.lang.reflect.Method[] methods = entry.getClass().getDeclaredMethods();
-                    for (java.lang.reflect.Method m : methods) {
-                        if (m.getReturnType() == StatusBarNotification.class) {
-                            m.setAccessible(true);
-                            Object notif5 = m.invoke(entry);
-                            if (notif5 instanceof StatusBarNotification) {
-                                XposedBridge.log(TAG + ": Found sbn via reflected method " + m.getName());
-                                return (StatusBarNotification) notif5;
-                            }
-                        }
-                    }
-                } catch (Throwable e) { XposedBridge.log(TAG + ": reflect methods failed: " + e); }
-            }
-
-            XposedBridge.log(TAG + ": FAILED to extract sbn from param");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": extractSbnFromParam exception: " + t);
-        }
-        return null;
-    }
-    private String buildContentHash(StatusBarNotification sbn) {
-        try {
-            android.app.Notification n = sbn.getNotification();
-            String title = n.extras.getString(android.app.Notification.EXTRA_TITLE, "");
-            String text = n.extras.getCharSequence(android.app.Notification.EXTRA_TEXT, "").toString();
-            return sbn.getPackageName() + "|" + title + "|" + text;
-        } catch (Throwable t) { return sbn.getKey(); }
-    }
-    private void hookHeadsUpRowTouch(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> rowClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
-                lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(rowClass, "onTouchEvent", MotionEvent.class, new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (mCurrentKey == null) return;
-                    try {
-                        View rowView = (View) param.thisObject;
-                        StatusBarNotification sbn = getSbnFromRow(rowView);
-                        if (sbn != null && mCurrentKey.equals(sbn.getKey())) {
-                            param.setResult(true);
-                        }
-                    } catch (Throwable t) {}
-                }
-            });
-            XposedBridge.log(TAG + ": HeadsUpRow touch hook installed");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + ": hookHeadsUpRowTouch failed: " + t);
-        }
-    }
-
-
-
-
-    
 
     private void hookPanelExpansion(XC_LoadPackage.LoadPackageParam lpparam) {
         // 路径1: NotificationPanelViewController.onPanelExpansionChanged (Android 13 最常用)
@@ -711,7 +428,6 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
 
-
     private StatusBarNotification getSbnFromRow(View rowView) {
         try {
             Object entry = XposedHelpers.getObjectField(rowView, "mEntry");
@@ -725,9 +441,8 @@ public class MainHook implements IXposedHookLoadPackage {
         return null;
     }
 
-    private boolean isLandscape() {
-        if (mContext == null) return false;
-        return mContext.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+    private boolean isLandscape(View view) {
+        return view.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
     }
 
     private void cancelAllAnimations() {
@@ -751,108 +466,55 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void startEnterAnimation(final View view) {
         cancelAllAnimations();
-        // 初始状态：看不见的圆点
         view.setAlpha(0f);
+        view.setTranslationY(-30f);
         view.setTranslationX(0f);
-        view.setTranslationY(0f);
-        view.setScaleX(0f);
-        view.setScaleY(0f);
+        view.setScaleX(0.3f);
+        view.setScaleY(0.15f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        // 内容层初始隐藏
-        if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0f); mIconView.setScaleY(0f); }
-        if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationX(-30f); }
-        if (mTextView != null) { mTextView.setAlpha(0f); }
-        // 背景模糊初始隐藏
-        if (mBgImageView != null) mBgImageView.setAlpha(0f);
-        // 圆角初始为圆形
-        if (mGlassView != null) mGlassView.setCornerRadius(WIN_H * 0.5f);
-
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(520);
+        mEnterAnim.setDuration(380);
         mEnterAnim.setInterpolator(null);
         mEnterAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            mEnterProgress = t;
-            float containerAlpha, containerScale, cornerRadius;
-
-            // === 容器主体动画 ===
-            if (t < 0.08f) {
-                // 阶段1：圆点凝聚（0~42ms）
-                float p = t / 0.08f;
-                float ease = p * p;
-                containerAlpha = ease * 0.3f;
-                containerScale = ease * 0.15f;
-                cornerRadius = WIN_H * 0.5f;
-            } else if (t < 0.28f) {
-                // 阶段2：爆发膨胀到 overshoot（42~146ms）
-                float p = (t - 0.08f) / 0.20f;
-                float ease = 1f - (1f - p) * (1f - p) * (1f - p);
-                containerAlpha = 0.3f + ease * 0.7f;
-                containerScale = 0.15f + 1.0f * ease;
-                cornerRadius = WIN_H * 0.5f * (1f - ease * 0.85f) + 28f * (ease * 0.85f);
-            } else if (t < 0.55f) {
-                // 阶段3：弹性回弹（146~286ms）—— 阻尼弹簧 2~3次抖动
-                float p = (t - 0.28f) / 0.27f;
-                float decay = (float) Math.exp(-4.5f * p);
-                float oscillation = (float) Math.sin(p * Math.PI * 4.5f);
-                float bounce = decay * oscillation * 0.12f;
-                containerAlpha = 1f;
-                containerScale = 1.15f - 0.15f * p + bounce;
-                cornerRadius = 28f + (WIN_H * 0.08f) * decay * Math.abs(oscillation);
-            } else if (t < 0.75f) {
-                // 阶段4：稳定收敛（286~390ms）
-                float p = (t - 0.55f) / 0.20f;
+            float alpha, transY, scaleX, scaleY;
+            if (t < 0.15f) {
+                // 阶段1：水滴凝聚（0~57ms）—— 从模糊光斑快速凝聚
+                float p = t / 0.15f;
                 float ease = p * p * (3f - 2f * p);
-                containerAlpha = 1f;
-                containerScale = 1.0f;
-                cornerRadius = 28f + (WIN_H * 0.08f) * (1f - ease);
+                alpha = ease * 0.4f;
+                transY = -30f * (1f - ease);
+                scaleX = 0.3f + 0.5f * ease;
+                scaleY = 0.15f + 0.45f * ease;
+            } else if (t < 0.45f) {
+                // 阶段2：果冻甩出（57~171ms）—— 横向急速展开，纵向滞后
+                float p = (t - 0.15f) / 0.30f;
+                float ease = 1f - (1f - p) * (1f - p);
+                alpha = 0.4f + 0.5f * ease;
+                transY = -5f * (1f - ease);
+                scaleX = 0.8f + 0.45f * ease;
+                scaleY = 0.6f + 0.55f * ease;
+            } else if (t < 0.75f) {
+                // 阶段3：过冲回弹（171~285ms）—— 果冻感，稍微过头再回正
+                float p = (t - 0.45f) / 0.30f;
+                float overshoot = (float) Math.sin(p * Math.PI) * 0.06f;
+                alpha = 0.9f + 0.1f * p;
+                transY = overshoot * 20f;
+                scaleX = 1.25f - 0.25f * p + overshoot;
+                scaleY = 1.15f - 0.15f * p + overshoot * 0.5f;
             } else {
-                // 阶段5：稳定呼吸（390~520ms）
+                // 阶段4：稳定波纹（285~380ms）—— 一道微颤波从中心向外扩散后消失
                 float p = (t - 0.75f) / 0.25f;
-                float breath = (float) Math.sin(p * Math.PI * 2) * 0.003f;
-                containerAlpha = 1f;
-                containerScale = 1.0f + breath;
-                cornerRadius = 28f;
+                float ripple = (float) Math.sin(p * Math.PI * 2) * 0.015f * (1f - p);
+                alpha = 1f;
+                transY = ripple * 10f;
+                scaleX = 1.0f + ripple;
+                scaleY = 1.0f + ripple * 0.8f;
             }
-
-            view.setAlpha(containerAlpha);
-            view.setScaleX(containerScale);
-            view.setScaleY(containerScale);
-            if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
-
-            // === 背景模糊淡入（膨胀到60%左右开始）===
-            if (mBgImageView != null) {
-                float bgAlpha = 0f;
-                if (t > 0.25f) {
-                    float bp = Math.min(1f, (t - 0.25f) / 0.35f);
-                    bgAlpha = bp * bp * (3f - 2f * bp);
-                }
-                mBgImageView.setAlpha(bgAlpha);
-            }
-
-            // === 内容 Stagger ===
-            // 图标：t=0.18 开始弹出（94ms）
-            if (mIconView != null && t > 0.18f) {
-                float ip = Math.min(1f, (t - 0.18f) / 0.18f);
-                float iease = 1f - (1f - ip) * (1f - ip) * (1f - ip);
-                float ibounce = (float) Math.sin(ip * Math.PI) * 0.15f;
-                mIconView.setAlpha(iease);
-                mIconView.setScaleX(iease + ibounce);
-                mIconView.setScaleY(iease + ibounce);
-            }
-            // 标题：t=0.30 开始从左滑入（156ms）
-            if (mTitleView != null && t > 0.30f) {
-                float tp = Math.min(1f, (t - 0.30f) / 0.20f);
-                float tease = tp * tp * (3f - 2f * tp);
-                mTitleView.setAlpha(tease);
-                mTitleView.setTranslationX(-30f * (1f - tease));
-            }
-            // 内容文字：t=0.42 开始淡入（218ms）
-            if (mTextView != null && t > 0.42f) {
-                float cp = Math.min(1f, (t - 0.42f) / 0.18f);
-                float cease = cp * cp * (3f - 2f * cp);
-                mTextView.setAlpha(cease);
-            }
+            view.setAlpha(Math.min(1f, alpha));
+            view.setTranslationY(transY);
+            view.setScaleX(scaleX);
+            view.setScaleY(scaleY);
         });
         mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -860,14 +522,9 @@ public class MainHook implements IXposedHookLoadPackage {
                 mEnterAnim = null;
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
                 view.setAlpha(1f);
+                view.setTranslationY(0f);
                 view.setScaleX(1f);
                 view.setScaleY(1f);
-                mEnterProgress = 1f;
-                if (mBgImageView != null) mBgImageView.setAlpha(1f);
-                if (mIconView != null) { mIconView.setAlpha(1f); mIconView.setScaleX(1f); mIconView.setScaleY(1f); }
-                if (mTitleView != null) { mTitleView.setAlpha(1f); mTitleView.setTranslationX(0f); }
-                if (mTextView != null) mTextView.setAlpha(1f);
-                if (mGlassView != null) mGlassView.setCornerRadius(28f);
             }
         });
         mEnterAnim.start();
@@ -876,57 +533,54 @@ public class MainHook implements IXposedHookLoadPackage {
     private void startExitAnimation(final View view, final Runnable onEnd, final int exitDirection) {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        // 内容先收回（Stagger 反向）
-        if (mTextView != null) mTextView.animate().alpha(0f).setDuration(60).start();
-        if (mTitleView != null) mTitleView.animate().alpha(0f).translationX(-15f).setDuration(80).setStartDelay(30).start();
-        if (mIconView != null) mIconView.animate().alpha(0f).scaleX(0.5f).scaleY(0.5f).setDuration(80).setStartDelay(60).start();
-        if (mBgImageView != null) mBgImageView.animate().alpha(0f).setDuration(100).start();
-
         mExitAnim = ValueAnimator.ofFloat(0f, 1f);
-        mExitAnim.setDuration(280);
+        mExitAnim.setDuration(220);
         mExitAnim.setInterpolator(null);
         mExitAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            float alpha, scale, cornerRadius, transX, transY;
-            if (t < 0.25f) {
-                // 阶段1：吸一下（0~70ms）
-                float p = t / 0.25f;
+            float alpha, scaleX, scaleY, transX, transY;
+            if (t < 0.3f) {
+                // 阶段1：回缩凝聚（0~66ms）—— 像冰块收缩，稍微往内收一点
+                float p = t / 0.3f;
                 float ease = p * p;
-                alpha = 1f - ease * 0.1f;
-                scale = 1f - ease * 0.12f;
-                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * ease * 0.3f;
-                transX = 0f; transY = 0f;
-            } else if (t < 0.65f) {
-                // 阶段2：缩成圆点（70~182ms）
-                float p = (t - 0.25f) / 0.40f;
-                float ease = p * p * p;
-                alpha = 0.9f - ease * 0.7f;
-                scale = 0.88f - ease * 0.88f;
-                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * (0.3f + ease * 0.7f);
+                alpha = 1f - ease * 0.15f;
+                scaleX = 1f - ease * 0.08f;
+                scaleY = 1f - ease * 0.12f;
                 switch (exitDirection) {
-                    case 1: transX = 0f; transY = -10f * ease; break;
-                    case 2: transX = 10f * ease; transY = 0f; break;
-                    default: transX = -10f * ease; transY = 0f; break;
+                    case 1: transX = 0f; transY = -8f * ease; break;
+                    case 2: transX = 8f * ease; transY = 0f; break;
+                    default: transX = -8f * ease; transY = 0f; break;
+                }
+            } else if (t < 0.6f) {
+                // 阶段2：雾气散开（66~132ms）—— 快速透明 + 轻微放大后收缩
+                float p = (t - 0.3f) / 0.3f;
+                float ease = p * p;
+                alpha = 0.85f - ease * 0.55f;
+                scaleX = 0.92f + ease * 0.06f;
+                scaleY = 0.88f + ease * 0.04f;
+                switch (exitDirection) {
+                    case 1: transX = 0f; transY = -8f - 30f * ease; break;
+                    case 2: transX = 8f + 30f * ease; transY = 0f; break;
+                    default: transX = -8f - 30f * ease; transY = 0f; break;
                 }
             } else {
-                // 阶段3："啵"地消失（182~280ms）
-                float p = (t - 0.65f) / 0.35f;
-                float ease = p * p * p * p;
-                alpha = 0.2f * (1f - ease);
-                scale = ease * 0.02f;
-                cornerRadius = WIN_H * 0.5f;
+                // 阶段3：嗤的一下消失（132~220ms）—— 瞬间透明，像雾气被风吹散
+                float p = (t - 0.6f) / 0.4f;
+                float ease = p * p * p;
+                alpha = 0.3f * (1f - ease);
+                scaleX = 0.98f - ease * 0.08f;
+                scaleY = 0.92f - ease * 0.15f;
                 switch (exitDirection) {
-                    case 1: transX = 0f; transY = -10f - 20f * ease; break;
-                    case 2: transX = 10f + 20f * ease; transY = 0f; break;
-                    default: transX = -10f - 20f * ease; transY = 0f; break;
+                    case 1: transX = 0f; transY = -38f - 60f * ease; break;
+                    case 2: transX = 38f + 60f * ease; transY = 0f; break;
+                    default: transX = -38f - 60f * ease; transY = 0f; break;
                 }
             }
             view.setAlpha(Math.max(0f, alpha));
-            view.setScaleX(Math.max(0.01f, scale));
-            view.setScaleY(Math.max(0.01f, scale));
+            view.setScaleX(scaleX);
+            view.setScaleY(scaleY);
             view.setTranslationX(transX);
             view.setTranslationY(transY);
-            if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -1030,11 +684,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(44, 44);
                 iconLp.gravity = Gravity.CENTER_VERTICAL;
                 iconView.setLayoutParams(iconLp);
-                iconView.setAlpha(0f);
-                iconView.setScaleX(0f);
-                iconView.setScaleY(0f);
                 contentContainer.addView(iconView);
-                mIconView = iconView;
 
                 LinearLayout textContainer = new LinearLayout(mContext);
                 textContainer.setOrientation(LinearLayout.VERTICAL);
@@ -1050,10 +700,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 titleView.setTextSize(14);
                 titleView.setMaxLines(1);
                 titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                titleView.setAlpha(0f);
-                titleView.setTranslationX(-30f);
                 textContainer.addView(titleView);
-                mTitleView = titleView;
 
                 TextView contentView = new TextView(mContext);
                 contentView.setText(content);
@@ -1061,10 +708,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 contentView.setTextSize(12);
                 contentView.setMaxLines(1);
                 contentView.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                contentView.setAlpha(0f);
                 textContainer.addView(contentView);
                 contentContainer.addView(textContainer);
-                mTextView = contentView;
 
                 root.addView(contentContainer);
                 mContentView = contentContainer;
@@ -1084,13 +729,8 @@ public class MainHook implements IXposedHookLoadPackage {
                                 if (mVelocityTracker != null) mVelocityTracker.recycle();
                                 mVelocityTracker = android.view.VelocityTracker.obtain();
                                 mVelocityTracker.addMovement(event);
-                                // iOS 风格：更柔和的果冻按压
-                                v.animate().scaleX(0.95f).scaleY(0.95f)
-                                    .setDuration(60).setInterpolator(new DecelerateInterpolator()).start();
-                                if (mCurrentOverlay != null) {
-                                    mCurrentOverlay.animate().scaleX(0.96f).scaleY(0.96f)
-                                        .setDuration(60).setInterpolator(new DecelerateInterpolator()).start();
-                                }
+                                v.animate().scaleX(0.97f).scaleY(0.97f)
+                                    .setDuration(80).setInterpolator(new DecelerateInterpolator()).start();
                                 if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), 1.0f);
                                 return true;
                             case MotionEvent.ACTION_MOVE:
@@ -1110,15 +750,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                 else { v.setTranslationX(dx); v.setTranslationY(dy); }
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 v.setAlpha(Math.max(0.5f, 1f - dist / 300f));
-                                // iOS 风格：弹簧物理滞后——root 跟随但有 85% 滞后感
+                                // 同步移动整个 root（玻璃+背景+文字一起动）
                                 if (mCurrentOverlay != null) {
-                                    float lagX = dx * 0.85f;
-                                    float lagY = dy * 0.85f;
-                                    mCurrentOverlay.setTranslationX(lagX);
-                                    mCurrentOverlay.setTranslationY(lagY);
-                                    // 滑动时整体轻微倾斜（果冻形变）
-                                    float tilt = Math.min(0.03f, dx / 3000f);
-                                    mCurrentOverlay.setRotationY(tilt * 10f);
+                                    mCurrentOverlay.setTranslationX(dx);
+                                    mCurrentOverlay.setTranslationY(dy);
                                 }
                                 if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), Math.min(1.0f, dist / 80f));
                                 return true;
@@ -1127,37 +762,25 @@ public class MainHook implements IXposedHookLoadPackage {
                                     mVelocityTracker.recycle();
                                     mVelocityTracker = null;
                                 }
-                                // iOS 风格：强果冻回弹（2~3次明显抖动）
                                 v.animate().scaleX(1f).scaleY(1f)
-                                    .setDuration(350).setInterpolator(new OvershootInterpolator(2.5f)).start();
+                                    .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
                                 v.setTranslationX(0f);
                                 v.setTranslationY(0f);
                                 v.setAlpha(1f);
                                 if (mCurrentOverlay != null) {
-                                    mCurrentOverlay.animate()
-                                        .translationX(0f).translationY(0f)
-                                        .scaleX(1f).scaleY(1f)
-                                        .rotationY(0f)
-                                        .setDuration(350)
-                                        .setInterpolator(new OvershootInterpolator(2.5f))
-                                        .start();
+                                    mCurrentOverlay.setTranslationX(0f);
+                                    mCurrentOverlay.setTranslationY(0f);
                                 }
                                 if (mGlassView != null) mGlassView.clearTouchPoint();
                                 return true;
                             case MotionEvent.ACTION_UP:
                                 if (mGlassView != null) mGlassView.clearTouchPoint();
-                                // iOS 风格：松手时强果冻回弹
-                                v.animate().scaleX(1f).scaleY(1f)
-                                    .setDuration(350).setInterpolator(new OvershootInterpolator(2.5f)).start();
                                 if (mCurrentOverlay != null) {
-                                    mCurrentOverlay.animate()
-                                        .translationX(0f).translationY(0f)
-                                        .scaleX(1f).scaleY(1f)
-                                        .rotationY(0f)
-                                        .setDuration(350)
-                                        .setInterpolator(new OvershootInterpolator(2.5f))
-                                        .start();
+                                    mCurrentOverlay.setTranslationX(0f);
+                                    mCurrentOverlay.setTranslationY(0f);
                                 }
+                                v.animate().scaleX(1f).scaleY(1f)
+                                    .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
                                 float velocityX = 0f, velocityY = 0f;
@@ -1231,13 +854,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 mWindowManager.addView(root, params);
                 mCurrentKey = key;
-                mShownKeys.add(key);
-                // 限制缓存大小，防止内存泄漏
-                if (mShownKeys.size() > 200) {
-                    java.util.Iterator<String> it = mShownKeys.iterator();
-                    int removeCount = 50;
-                    while (it.hasNext() && removeCount-- > 0) { it.next(); it.remove(); }
-                }
                 mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
 
@@ -1264,7 +880,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 contentIntent.send(mContext, 0, null);
             }
         } catch (Throwable e) {
-            try { contentIntent.send(mContext, 0, null); } catch (Throwable ignored) {}
+            try { contentIntent.send(); } catch (Throwable ignored) {}
         }
     }
 
@@ -1443,28 +1059,19 @@ public class MainHook implements IXposedHookLoadPackage {
             mAutoDismissRunnable = null;
         }
         String keyToRemove = mCurrentKey;
-        View rowViewSnapshot = mCurrentRowView;
-        final View overlayToShield = mCurrentOverlay;
-        // 系统 Heads-Up 已关闭，无需清理系统通知
-         if (rowViewSnapshot != null) {
-            try { XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUp", false); }
-            catch (Throwable t1) {
-                try { XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUpAnimatingAway", true); }
-                catch (Throwable ignored) {}
-            }
-        }
-        if (overlayToShield != null) {
+        final View overlayToRemove = mCurrentOverlay;
+        if (overlayToRemove != null) {
             try {
-                overlayToShield.setAlpha(0f);
+                overlayToRemove.setAlpha(0f);
                 if (mContentView != null) mContentView.setOnTouchListener(null);
             } catch (Throwable ignored) {}
             mHandler.postDelayed(() -> {
                 try {
-                    if (overlayToShield.getParent() != null) mWindowManager.removeView(overlayToShield);
+                    if (overlayToRemove.getParent() != null) mWindowManager.removeView(overlayToRemove);
                 } catch (Throwable t) {
-                    try { mWindowManager.removeViewImmediate(overlayToShield); } catch (Throwable ignored) {}
+                    try { mWindowManager.removeViewImmediate(overlayToRemove); } catch (Throwable ignored) {}
                 }
-            }, SHIELD_DELAY_MS);
+            }, 50);
         }
         if (mBlurredBgBitmap != null) {
             try { if (!mBlurredBgBitmap.isRecycled()) mBlurredBgBitmap.recycle(); } catch (Throwable ignored) {}
@@ -1512,7 +1119,7 @@ public class MainHook implements IXposedHookLoadPackage {
         private float mInnerGlowIntensity = 0.3f;
         private final int mViewWidth;
         private final int mViewHeight;
-        private float mCornerRadius;
+        private final float mCornerRadius;
         private final boolean mIsDark;
         private final RectF mDrawRect;
         private final android.graphics.Path mClipPath;
@@ -1721,11 +1328,6 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
-        public void setCornerRadius(float radius) {
-            mCornerRadius = radius;
-            invalidate();
-        }
-
         public void stopAnimations() {
             if (mFlowAnimator != null) mFlowAnimator.cancel();
             if (mCausticAnimator != null) mCausticAnimator.cancel();
@@ -1738,8 +1340,7 @@ public class MainHook implements IXposedHookLoadPackage {
             super.onDetachedFromWindow();
             stopAnimations();
             if (mNoiseBitmap != null && !mNoiseBitmap.isRecycled()) mNoiseBitmap.recycle();
-
+        }
     }
 
-}
 }
