@@ -31,6 +31,21 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Shader;
+import android.graphics.BitmapShader;
+import android.graphics.RadialGradient;
+import android.graphics.LinearGradient;
+import android.graphics.SweepGradient;
+import android.graphics.RectF;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
+import android.view.animation.LinearInterpolator;
+import android.view.animation.AccelerateDecelerateInterpolator;
+
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -96,6 +111,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private View mContentView = null;
     private ImageView mBgImageView = null;
+    private LiquidGlassView mGlassView = null;
     private Bitmap mBlurredBgBitmap = null;
     private Runnable mBgUpdateRunnable = null;
     private static final long BG_UPDATE_INTERVAL_MS = 500;
@@ -450,27 +466,44 @@ public class MainHook implements IXposedHookLoadPackage {
     private void startEnterAnimation(final View view) {
         cancelAllAnimations();
         view.setAlpha(0f);
-        view.setTranslationY(-40f);
+        view.setTranslationY(-60f);
         view.setTranslationX(0f);
-        view.setScaleX(0.96f);
-        view.setScaleY(0.96f);
+        view.setScaleX(0.1f);
+        view.setScaleY(0.2f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(200);
-        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.2f));
+        mEnterAnim.setDuration(280);
+        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.0f));
         mEnterAnim.addUpdateListener(anim -> {
-            float ease = (float) anim.getAnimatedValue();
-            float decel = 1f - (1f - ease) * (1f - ease);
+            float t = (float) anim.getAnimatedValue();
+            float decel = 1f - (1f - t) * (1f - t);
+            float scaleX, scaleY;
+            if (t < 0.35f) {
+                float p = t / 0.35f;
+                scaleX = 0.1f + 1.05f * p;
+                scaleY = 0.2f + 0.3f * p;
+            } else if (t < 0.7f) {
+                float p = (t - 0.35f) / 0.35f;
+                scaleX = 1.15f - 0.15f * p;
+                scaleY = 0.5f + 0.55f * p;
+            } else {
+                float p = (t - 0.7f) / 0.3f;
+                float bounce = (float) Math.sin(p * Math.PI) * 0.02f;
+                scaleX = 1.0f + bounce;
+                scaleY = 1.05f - 0.05f * p + bounce;
+            }
             view.setAlpha(decel);
-            view.setTranslationY(-40f * (1f - decel));
-            view.setScaleX(0.96f + 0.04f * decel);
-            view.setScaleY(0.96f + 0.04f * decel);
+            view.setTranslationY(-60f * (1f - decel));
+            view.setScaleX(scaleX);
+            view.setScaleY(scaleY);
         });
         mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 if (mEnterAnim == null) return;
                 mEnterAnim = null;
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
+                view.setScaleX(1f);
+                view.setScaleY(1f);
             }
         });
         mEnterAnim.start();
@@ -574,83 +607,11 @@ public class MainHook implements IXposedHookLoadPackage {
                 root.addView(bgView);
                 mBgImageView = bgView;
 
-                // === 第2层：液态玻璃效果层（10层合成）===
-                // 1. 底色
-                GradientDrawable bg = new GradientDrawable();
-                bg.setShape(GradientDrawable.RECTANGLE);
-                bg.setCornerRadius(28);
-                bg.setColor(glassBaseColor);
-
-                // 2. 顶部镜面高光（强反光）
-                GradientDrawable specularHighlight = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[] { isDark ? 0x50FFFFFF : 0x70FFFFFF, 0x00FFFFFF });
-                specularHighlight.setShape(GradientDrawable.RECTANGLE);
-                specularHighlight.setCornerRadius(28);
-
-                // 3. 顶部漫反射高光
-                GradientDrawable topHighlight = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[] { topHighlightStart, 0x00FFFFFF });
-                topHighlight.setShape(GradientDrawable.RECTANGLE);
-                topHighlight.setCornerRadius(28);
-
-                // 4. 内部对角线反射条纹
-                GradientDrawable internalReflect = new GradientDrawable(
-                    GradientDrawable.Orientation.TL_BR,
-                    new int[] { 0x00FFFFFF, isDark ? 0x0AFFFFFF : 0x15FFFFFF, 0x00FFFFFF });
-                internalReflect.setShape(GradientDrawable.RECTANGLE);
-                internalReflect.setCornerRadius(28);
-
-                // 5. 底部光晕
-                GradientDrawable bottomGlow = new GradientDrawable(
-                    GradientDrawable.Orientation.BOTTOM_TOP,
-                    new int[] { bottomGlowEnd, 0x00FFFFFF });
-                bottomGlow.setShape(GradientDrawable.RECTANGLE);
-                bottomGlow.setCornerRadius(28);
-
-                // 6. 内边缘折射（冷色调-蓝青）
-                GradientDrawable edgeInner = new GradientDrawable();
-                edgeInner.setShape(GradientDrawable.RECTANGLE);
-                edgeInner.setCornerRadius(28);
-                edgeInner.setStroke(1, isDark ? 0x18AADDFF : 0x2288CCFF);
-                edgeInner.setColor(0x00000000);
-
-                // 7. 外边缘折射（暖色调-橙黄）
-                GradientDrawable edgeOuter = new GradientDrawable();
-                edgeOuter.setShape(GradientDrawable.RECTANGLE);
-                edgeOuter.setCornerRadius(28);
-                edgeOuter.setStroke(1, isDark ? 0x18FFCC88 : 0x22FFAA66);
-                edgeOuter.setColor(0x00000000);
-
-                // 8. 主边缘描边
-                GradientDrawable edgeGlow = new GradientDrawable();
-                edgeGlow.setShape(GradientDrawable.RECTANGLE);
-                edgeGlow.setCornerRadius(28);
-                edgeGlow.setStroke(1, edgeColor);
-                edgeGlow.setColor(0x00000000);
-
-                // 9. 内阴影
-                GradientDrawable innerShadow = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[] { 0x08000000, 0x00000000 });
-                innerShadow.setShape(GradientDrawable.RECTANGLE);
-                innerShadow.setCornerRadius(28);
-
-                // 10. 底部投影
-                GradientDrawable dropShadow = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[] { 0x00000000, isDark ? 0x25000000 : 0x18FFFFFF });
-                dropShadow.setShape(GradientDrawable.RECTANGLE);
-                dropShadow.setCornerRadius(28);
-
-                android.graphics.drawable.LayerDrawable glassBg =
-                    new android.graphics.drawable.LayerDrawable(
-                        new android.graphics.drawable.Drawable[] { bg, specularHighlight, topHighlight, internalReflect, bottomGlow, edgeInner, edgeOuter, edgeGlow, innerShadow, dropShadow });
-                View glassOverlay = new View(mContext);
+                // === 第2层：液态玻璃效果层（Shader 动态渲染）===
+                LiquidGlassView glassOverlay = new LiquidGlassView(mContext, WIN_W, WIN_H, isDark);
                 glassOverlay.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
-                glassOverlay.setBackground(glassBg);
                 root.addView(glassOverlay);
+                mGlassView = glassOverlay;
 
                 // === 第3层：内容容器（可移动）===
                 LinearLayout contentContainer = new LinearLayout(mContext);
@@ -731,6 +692,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mVelocityTracker.addMovement(event);
                                 v.animate().scaleX(0.97f).scaleY(0.97f)
                                     .setDuration(80).setInterpolator(new DecelerateInterpolator()).start();
+                                if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), 1.0f);
                                 return true;
                             case MotionEvent.ACTION_MOVE:
                                 float dx = event.getRawX() - startX;
@@ -749,6 +711,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 else { v.setTranslationX(dx); v.setTranslationY(dy); }
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 v.setAlpha(Math.max(0.5f, 1f - dist / 300f));
+                                if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), Math.min(1.0f, dist / 80f));
                                 return true;
                             case MotionEvent.ACTION_CANCEL:
                                 if (mVelocityTracker != null) {
@@ -760,8 +723,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                 v.setTranslationX(0f);
                                 v.setTranslationY(0f);
                                 v.setAlpha(1f);
+                                if (mGlassView != null) mGlassView.clearTouchPoint();
                                 return true;
                             case MotionEvent.ACTION_UP:
+                                if (mGlassView != null) mGlassView.clearTouchPoint();
                                 v.animate().scaleX(1f).scaleY(1f)
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
                                 float totalDx = event.getRawX() - startX;
@@ -980,7 +945,11 @@ public class MainHook implements IXposedHookLoadPackage {
         mBlurredBgBitmap = blurred;
         mHandler.post(() -> {
             try {
-                if (mBgImageView != null) mBgImageView.setImageBitmap(blurred);
+                if (mBgImageView != null) {
+                    mBgImageView.setScaleX(1.03f);
+                    mBgImageView.setScaleY(1.03f);
+                    mBgImageView.setImageBitmap(blurred);
+                }
                 if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
             } catch (Throwable t) {
                 XposedBridge.log(TAG + ": updateBackground post error: " + t);
@@ -1043,10 +1012,250 @@ public class MainHook implements IXposedHookLoadPackage {
         }
         mBgImageView = null;
         mContentView = null;
+        if (mGlassView != null) {
+            mGlassView.stopAnimations();
+            mGlassView = null;
+        }
         if (keyToRemove != null) mLastDismissTime = SystemClock.elapsedRealtime();
         mCurrentKey = null;
         mCurrentRowView = null;
         mCurrentOverlay = null;
         mCurrentContentHash = null;
     }
+
+    private class LiquidGlassView extends View {
+        private final Paint mBasePaint;
+        private final Paint mHighlightPaint;
+        private final Paint mCausticPaint;
+        private final Paint mReflectionPaint;
+        private final Paint mShadowPaint;
+        private final Paint mInnerGlowPaint;
+        private final Paint mDentPaint;
+        private final Paint mDentRimPaint;
+
+        private final Bitmap mNoiseBitmap;
+        private final BitmapShader mNoiseShader;
+        private final Matrix mNoiseMatrix;
+
+        private ValueAnimator mFlowAnimator;
+        private ValueAnimator mCausticAnimator;
+        private ValueAnimator mBreathAnimator;
+        private ValueAnimator mInnerGlowAnimator;
+
+        private float mFlowOffset = 0f;
+        private float mCausticAngle = 0f;
+        private float mBreathAlpha = 0.95f;
+        private float mInnerGlowIntensity = 0.3f;
+        private final int mViewWidth;
+        private final int mViewHeight;
+        private final float mCornerRadius;
+        private final boolean mIsDark;
+        private final RectF mDrawRect;
+        private final android.graphics.Path mClipPath;
+
+        private float mTouchX = -1f;
+        private float mTouchY = -1f;
+        private float mTouchPressure = 0f;
+
+        public LiquidGlassView(Context context, int w, int h, boolean isDark) {
+            super(context);
+            mViewWidth = w;
+            mViewHeight = h;
+            mCornerRadius = 28f;
+            mIsDark = isDark;
+            mDrawRect = new RectF(0, 0, w, h);
+            mClipPath = new android.graphics.Path();
+
+            int centerColor = isDark ? 0x22FFFFFF : 0x28FFFFFF;
+            int midColor = isDark ? 0x10FFFFFF : 0x15FFFFFF;
+            int edgeColor = isDark ? 0x08FFFFFF : 0x0AFFFFFF;
+            RadialGradient volumeGrad = new RadialGradient(
+                w * 0.5f, h * 0.4f, Math.max(w, h) * 0.8f,
+                new int[]{centerColor, midColor, edgeColor, 0x00000000},
+                new float[]{0f, 0.35f, 0.7f, 1f},
+                Shader.TileMode.CLAMP);
+            mBasePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mBasePaint.setShader(volumeGrad);
+
+            mNoiseBitmap = createNoiseBitmap(256, 256);
+            mNoiseShader = new BitmapShader(mNoiseBitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
+            mNoiseMatrix = new Matrix();
+            mHighlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mHighlightPaint.setShader(mNoiseShader);
+            mHighlightPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+
+            mCausticPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mCausticPaint.setStyle(Paint.Style.STROKE);
+            mCausticPaint.setStrokeWidth(2.5f);
+            mCausticPaint.setMaskFilter(new android.graphics.BlurMaskFilter(4f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+
+            int reflStart = isDark ? 0x45FFFFFF : 0x60FFFFFF;
+            int reflMid = isDark ? 0x20FFFFFF : 0x30FFFFFF;
+            LinearGradient reflGrad = new LinearGradient(
+                0, 0, 0, h * 0.55f,
+                new int[]{reflStart, reflMid, 0x00FFFFFF},
+                new float[]{0f, 0.2f, 1f},
+                Shader.TileMode.CLAMP);
+            mReflectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mReflectionPaint.setShader(reflGrad);
+            mReflectionPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+
+            int shadowEnd = isDark ? 0x30000000 : 0x18FFFFFF;
+            LinearGradient shadowGrad = new LinearGradient(
+                0, h * 0.5f, 0, h,
+                0x00000000, shadowEnd, Shader.TileMode.CLAMP);
+            mShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mShadowPaint.setShader(shadowGrad);
+
+            mInnerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mInnerGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(10f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+
+            mDentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mDentRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mDentRimPaint.setStyle(Paint.Style.STROKE);
+
+            startAnimations();
+        }
+
+        private Bitmap createNoiseBitmap(int w, int h) {
+            Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(bmp);
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            java.util.Random r = new java.util.Random(12345);
+            for (int i = 0; i < 30; i++) {
+                float x = r.nextFloat() * w;
+                float y = r.nextFloat() * h * 0.4f;
+                float radius = 8f + r.nextFloat() * 20f;
+                int a = 12 + r.nextInt(30);
+                p.setColor(Color.argb(a, 255, 255, 255));
+                c.drawCircle(x, y, radius, p);
+            }
+            for (int i = 0; i < 100; i++) {
+                float x = r.nextFloat() * w;
+                float y = r.nextFloat() * h;
+                float radius = 1f + r.nextFloat() * 3f;
+                int a = 15 + r.nextInt(40);
+                p.setColor(Color.argb(a, 255, 255, 255));
+                c.drawCircle(x, y, radius, p);
+            }
+            for (int i = 0; i < 6; i++) {
+                float y = r.nextFloat() * h * 0.3f;
+                float bandH = 2f + r.nextFloat() * 5f;
+                int a = 8 + r.nextInt(15);
+                p.setColor(Color.argb(a, 255, 255, 255));
+                c.drawRect(0, y, w, y + bandH, p);
+            }
+            return bmp;
+        }
+
+        private void startAnimations() {
+            mFlowAnimator = ValueAnimator.ofFloat(0f, 1f);
+            mFlowAnimator.setDuration(2500);
+            mFlowAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mFlowAnimator.setInterpolator(new LinearInterpolator());
+            mFlowAnimator.addUpdateListener(anim -> {
+                mFlowOffset = (float) anim.getAnimatedValue();
+                mNoiseMatrix.setTranslate(mFlowOffset * 512, mFlowOffset * 64);
+                mNoiseShader.setLocalMatrix(mNoiseMatrix);
+                invalidate();
+            });
+            mFlowAnimator.start();
+
+            mCausticAnimator = ValueAnimator.ofFloat(0f, 1f);
+            mCausticAnimator.setDuration(6000);
+            mCausticAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mCausticAnimator.setInterpolator(new LinearInterpolator());
+            mCausticAnimator.addUpdateListener(anim -> {
+                mCausticAngle = (float) anim.getAnimatedValue();
+                float[] hsv = new float[]{200f + (float)(Math.sin(mCausticAngle * Math.PI * 2) * 25), 0.25f, 0.9f};
+                mCausticPaint.setColor(Color.HSVToColor(hsv));
+                invalidate();
+            });
+            mCausticAnimator.start();
+
+            mBreathAnimator = ValueAnimator.ofFloat(0.90f, 0.98f);
+            mBreathAnimator.setDuration(4000);
+            mBreathAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mBreathAnimator.setRepeatMode(ValueAnimator.REVERSE);
+            mBreathAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
+            mBreathAnimator.addUpdateListener(anim -> {
+                mBreathAlpha = (float) anim.getAnimatedValue();
+                invalidate();
+            });
+            mBreathAnimator.start();
+
+            mInnerGlowAnimator = ValueAnimator.ofFloat(0.2f, 0.5f);
+            mInnerGlowAnimator.setDuration(3000);
+            mInnerGlowAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mInnerGlowAnimator.setRepeatMode(ValueAnimator.REVERSE);
+            mInnerGlowAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
+            mInnerGlowAnimator.addUpdateListener(anim -> {
+                mInnerGlowIntensity = (float) anim.getAnimatedValue();
+                invalidate();
+            });
+            mInnerGlowAnimator.start();
+        }
+
+        public void setTouchPoint(float x, float y, float pressure) {
+            mTouchX = x; mTouchY = y; mTouchPressure = pressure;
+            invalidate();
+        }
+
+        public void clearTouchPoint() {
+            mTouchX = -1f; mTouchY = -1f; mTouchPressure = 0f;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            mClipPath.reset();
+            mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
+            canvas.clipPath(mClipPath);
+
+            canvas.drawRect(mDrawRect, mBasePaint);
+
+            mHighlightPaint.setAlpha((int)(35 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mHighlightPaint);
+
+            canvas.drawRect(mDrawRect, mReflectionPaint);
+
+            mCausticPaint.setAlpha((int)(55 * mBreathAlpha));
+            RectF innerRect = new RectF(2, 2, mViewWidth - 2, mViewHeight - 2);
+            canvas.drawRoundRect(innerRect, mCornerRadius - 1, mCornerRadius - 1, mCausticPaint);
+
+            int glowColor = mIsDark ?
+                Color.argb((int)(25 * mInnerGlowIntensity), 180, 210, 255) :
+                Color.argb((int)(20 * mInnerGlowIntensity), 200, 230, 255);
+            mInnerGlowPaint.setColor(glowColor);
+            float glowR = mCornerRadius * 1.8f;
+            canvas.drawCircle(mCornerRadius, mCornerRadius, glowR, mInnerGlowPaint);
+            canvas.drawCircle(mViewWidth - mCornerRadius, mCornerRadius, glowR, mInnerGlowPaint);
+
+            canvas.drawRect(mDrawRect, mShadowPaint);
+
+            if (mTouchX >= 0 && mTouchPressure > 0.01f) {
+                float dentR = 35f * mTouchPressure;
+                mDentPaint.setColor(mIsDark ? 0x25000000 : 0x18FFFFFF);
+                canvas.drawCircle(mTouchX, mTouchY, dentR, mDentPaint);
+                mDentRimPaint.setColor(Color.argb((int)(50 * mTouchPressure), 255, 255, 255));
+                mDentRimPaint.setStrokeWidth(2f * mTouchPressure);
+                canvas.drawCircle(mTouchX, mTouchY, dentR, mDentRimPaint);
+            }
+        }
+
+        public void stopAnimations() {
+            if (mFlowAnimator != null) mFlowAnimator.cancel();
+            if (mCausticAnimator != null) mCausticAnimator.cancel();
+            if (mBreathAnimator != null) mBreathAnimator.cancel();
+            if (mInnerGlowAnimator != null) mInnerGlowAnimator.cancel();
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            super.onDetachedFromWindow();
+            stopAnimations();
+            if (mNoiseBitmap != null && !mNoiseBitmap.isRecycled()) mNoiseBitmap.recycle();
+        }
+    }
+
 }
