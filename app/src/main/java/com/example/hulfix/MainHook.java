@@ -58,6 +58,14 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final long SHIELD_DELAY_MS = 400;
     private static final float SWIPE_INTENT_THRESHOLD = 40f;
 
+    /* ===== 液态玻璃参数 ===== */
+    private static final float IDLE_BLUR_RADIUS = 1.2f;   // 【v26】静止时的常驻轻微雾化
+    private static final float ENTER_BLUR_START = 8f;    // 入场起始雾化量
+    private static final float EXIT_BLUR_END = 16f;      // 出场结束雾化量
+    private static final float TOUCH_DOWN_BLUR = 2f;     // 按压时的额外雾化
+    private static final float BOUNCE_BLUR = 2f;         // 回弹时的额外雾化
+    private static final float BLUR_DELTA_THRESHOLD = 0.3f; // RenderEffect 更新阈值
+
     /* ===== 屏蔽列表 ===== */
     private static final String BLOCK_PKG = "com.omarea.vtools";
 
@@ -93,8 +101,10 @@ public class MainHook implements IXposedHookLoadPackage {
     private ValueAnimator mExitAnim = null;
     private ValueAnimator mBounceAnim = null;
 
-    /* ===== 液态玻璃模糊半径（用于拖拽联动） ===== */
-    private float mCurrentBlurRadius = 0f;
+    /* ===== 液态玻璃 blur 状态（分层管理） ===== */
+    private float mAnimBlurRadius = 0f;      // 动画驱动
+    private float mTouchBlurRadius = 0f;     // 触摸驱动
+    private float mLastAppliedBlur = -1f;    // 用于阈值去重
 
     /* ===== 手势追踪（防误判） ===== */
     private float mTouchMaxDx = 0f;
@@ -108,7 +118,7 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
 
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v25 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v26 loaded ======");
 
         if (mHandler == null) {
             mHandler = new Handler(Looper.getMainLooper());
@@ -202,7 +212,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             mIsPanelExpanded = true;
                             if (mCurrentOverlay != null) {
                                 XposedBridge.log(TAG + ": expandNotificationsPanel, remove overlay immediately");
-                                removeOverlayImmediate(); // 【v26】彻底清理，防止残留
+                                removeOverlayImmediate();
                             }
                         }
                     }
@@ -222,7 +232,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             mIsPanelExpanded = visible;
                             if (visible && mCurrentOverlay != null) {
                                 XposedBridge.log(TAG + ": setExpandedVisible(true), remove overlay immediately");
-                                removeOverlayImmediate(); // 【v26】彻底清理
+                                removeOverlayImmediate();
                             }
                         }
                     }
@@ -241,7 +251,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             mIsPanelExpanded = true;
                             if (mCurrentOverlay != null) {
                                 XposedBridge.log(TAG + ": makeExpandedVisible, remove overlay immediately");
-                                removeOverlayImmediate(); // 【v26】彻底清理
+                                removeOverlayImmediate();
                             }
                         }
                     }
@@ -252,7 +262,7 @@ public class MainHook implements IXposedHookLoadPackage {
             }
 
             // 5. PanelViewController — 用户下拉状态栏时立即清理 overlay，停止时重置标志
-            //    这是最早能检测到手势下拉的 hook 点，比 StatusBar 的方法更可靠
+            // 这是最早能检测到手势下拉的 hook 点，比 StatusBar 的方法更可靠
             try {
                 Class<?> panelControllerClass = XposedHelpers.findClass(
                     "com.android.systemui.statusbar.phone.PanelViewController",
@@ -265,7 +275,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             mIsPanelExpanded = true;
                             if (mCurrentOverlay != null) {
                                 XposedBridge.log(TAG + ": PanelViewController.onTrackingStarted, remove overlay immediately");
-                                removeOverlayImmediate(); // 【v26】彻底清理
+                                removeOverlayImmediate();
                             }
                         }
                     }
@@ -308,7 +318,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  从 StatusBar 彻底移除通知视图                                   */
+    /*  从 StatusBar 彻底移除通知视图                                  */
     /* ================================================================ */
     private void removeSystemNotificationView(String key) {
         if (mStatusBar != null && key != null) {
@@ -368,7 +378,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  【v22 新增】判断当前是否锁屏                                    */
+    /*  【v22 新增】判断当前是否锁屏                                   */
     /* ================================================================ */
     private boolean isKeyguardLocked() {
         if (mContext == null) return false;
@@ -401,7 +411,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  【v22 新增】注册屏幕息屏广播接收器                              */
+    /*  【v22 新增】注册屏幕息屏广播接收器                            */
     /* ================================================================ */
     private void registerScreenReceiver() {
         if (mBroadcastRegistered || mContext == null) return;
@@ -628,6 +638,23 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
+    /*  【v26 新增】统一 blur 应用入口（含阈值去重）                    */
+    /* ================================================================ */
+    private void applyBlur(View view) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
+        if (view == null) return;
+        float total = IDLE_BLUR_RADIUS + mAnimBlurRadius + mTouchBlurRadius;
+        if (Math.abs(total - mLastAppliedBlur) < BLUR_DELTA_THRESHOLD) return;
+        mLastAppliedBlur = total;
+        if (total > 0.5f) {
+            view.setRenderEffect(RenderEffect.createBlurEffect(
+                total, total, Shader.TileMode.CLAMP));
+        } else {
+            view.setRenderEffect(null);
+        }
+    }
+
+    /* ================================================================ */
     /*  取消所有手动动画                                                */
     /* ================================================================ */
     private void cancelAllAnimations() {
@@ -643,6 +670,16 @@ public class MainHook implements IXposedHookLoadPackage {
             mBounceAnim.cancel();
             mBounceAnim = null;
         }
+        // 【v26】清理动画 blur 状态，防止残留
+        mAnimBlurRadius = 0f;
+        if (mCurrentOverlay != null) {
+            applyBlur(mCurrentOverlay);
+            mCurrentOverlay.setAlpha(1f);
+            mCurrentOverlay.setTranslationX(0f);
+            mCurrentOverlay.setTranslationY(0f);
+            mCurrentOverlay.setScaleX(1f);
+            mCurrentOverlay.setScaleY(1f);
+        }
     }
 
     /* ================================================================ */
@@ -656,13 +693,8 @@ public class MainHook implements IXposedHookLoadPackage {
             view.setTranslationX(0f);
             view.setScaleX(0.96f);
             view.setScaleY(0.96f);
-            mCurrentBlurRadius = 12f;
-
-            // 液态玻璃：入场时从雾化到清晰
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                view.setRenderEffect(RenderEffect.createBlurEffect(
-                    mCurrentBlurRadius, mCurrentBlurRadius, Shader.TileMode.CLAMP));
-            }
+            mAnimBlurRadius = ENTER_BLUR_START; // 从雾化开始
+            applyBlur(view);
 
             mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
             mEnterAnim.setDuration(160);
@@ -673,17 +705,17 @@ public class MainHook implements IXposedHookLoadPackage {
                 view.setTranslationY(-40f * (1f - ease));
                 view.setScaleX(0.96f + 0.04f * ease);
                 view.setScaleY(0.96f + 0.04f * ease);
-
-                // 液态玻璃：动态去模糊
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    float blur = (1f - ease) * 12f;
-                    mCurrentBlurRadius = blur;
-                    if (blur > 0.5f) {
-                        view.setRenderEffect(RenderEffect.createBlurEffect(
-                            blur, blur, Shader.TileMode.CLAMP));
-                    } else {
-                        view.setRenderEffect(null);
-                    }
+                // 【v26】动态去模糊，终点保留 IDLE_BLUR_RADIUS
+                mAnimBlurRadius = (1f - ease) * ENTER_BLUR_START;
+                applyBlur(view);
+            });
+            // 【v26】增加结束监听，防止快速替换通知时状态竞争
+            mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(android.animation.Animator animation) {
+                    mEnterAnim = null;
+                    mAnimBlurRadius = 0f;
+                    applyBlur(view);
                 }
             });
             mEnterAnim.start();
@@ -709,24 +741,16 @@ public class MainHook implements IXposedHookLoadPackage {
             } else {
                 view.setTranslationX(-80f * realEase);
             }
-
-            // 液态玻璃：退出时逐渐雾化
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                float blur = realEase * 16f;
-                mCurrentBlurRadius = blur;
-                if (blur > 0.5f) {
-                    view.setRenderEffect(RenderEffect.createBlurEffect(
-                        blur, blur, Shader.TileMode.CLAMP));
-                }
-            }
+            // 【v26】退出时逐渐雾化
+            mAnimBlurRadius = realEase * EXIT_BLUR_END;
+            applyBlur(view);
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override
             public void onAnimationEnd(android.animation.Animator animation) {
                 mExitAnim = null;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    view.setRenderEffect(null);
-                }
+                mAnimBlurRadius = 0f;
+                applyBlur(view);
                 if (onEnd != null) onEnd.run();
             }
         });
@@ -734,26 +758,24 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /* ================================================================ */
-    /*  回弹动画                                                        */
+    /*  回弹动画（【v26】重写：阻尼振荡替代 sin+Overshoot 叠加）        */
     /* ================================================================ */
     private void startBounceAnimation(final View view, final float direction) {
         cancelAllAnimations();
 
-        // 液态玻璃：回弹时边缘微模糊，像果冻一样
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            view.setRenderEffect(RenderEffect.createBlurEffect(
-                2f, 2f, Shader.TileMode.CLAMP));
-        }
+        mAnimBlurRadius = BOUNCE_BLUR;
+        applyBlur(view);
 
-        // 使用 OvershootInterpolator 模拟弹性，像水滴回弹
         mBounceAnim = ValueAnimator.ofFloat(0f, 1f);
-        mBounceAnim.setDuration(200);
-        mBounceAnim.setInterpolator(new OvershootInterpolator(1.8f));
+        mBounceAnim.setDuration(300);
+        mBounceAnim.setInterpolator(null); // 线性，自己控制物理曲线
         mBounceAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            // 模拟 sin 回弹曲线，但用 Overshoot 提供更自然的物理感
-            float sin = (float) Math.sin(t * Math.PI);
-            float offset = 18f * sin * (1f - t) * direction;
+            // 【v26】阻尼振荡：e^(-5t) * sin(3πt)
+            // t=0.17 时达到第一次正向峰值，t=0.33 过零，t=0.50 负向小回弹
+            float decay = (float) Math.exp(-5 * t);
+            float oscillation = (float) Math.sin(t * Math.PI * 3);
+            float offset = 18f * decay * oscillation * direction;
             view.setTranslationX(offset);
             view.setAlpha(1f);
         });
@@ -762,9 +784,8 @@ public class MainHook implements IXposedHookLoadPackage {
             public void onAnimationEnd(android.animation.Animator animation) {
                 mBounceAnim = null;
                 view.setTranslationX(0f);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    view.setRenderEffect(null);
-                }
+                mAnimBlurRadius = 0f;
+                applyBlur(view);
             }
         });
         mBounceAnim.start();
@@ -942,13 +963,11 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mVelocityTracker = android.view.VelocityTracker.obtain();
                                 mVelocityTracker.addMovement(event);
 
-                                // 液态玻璃：按压时像水一样凹陷 + 微模糊
+                                // 【v26】按压时像水一样凹陷 + 微模糊
                                 v.animate().scaleX(0.97f).scaleY(0.97f)
                                     .setDuration(80).setInterpolator(new DecelerateInterpolator()).start();
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    v.setRenderEffect(RenderEffect.createBlurEffect(
-                                        3f, 3f, Shader.TileMode.CLAMP));
-                                }
+                                mTouchBlurRadius = TOUCH_DOWN_BLUR;
+                                applyBlur(v);
                                 return true;
 
                             case MotionEvent.ACTION_MOVE:
@@ -989,12 +1008,11 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return true;
 
                             case MotionEvent.ACTION_UP:
-                                // 液态玻璃：释放时恢复形状 + 去模糊
+                                // 【v26】释放时恢复形状 + 去模糊
                                 v.animate().scaleX(1f).scaleY(1f)
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && mCurrentBlurRadius < 1f) {
-                                    v.setRenderEffect(null);
-                                }
+                                mTouchBlurRadius = 0f;
+                                applyBlur(v);
 
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
@@ -1034,7 +1052,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar();
-                                    removeOverlayImmediate(); // 【v26】彻底清理，防止重复弹出
+                                    removeOverlayImmediate();
                                     return true;
                                 }
 
@@ -1173,7 +1191,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     /* ===== 立即移除（【v22】清理逻辑统一，删除死代码） ===== */
     /* ================================================================ */
-    /*  仅隐藏 overlay（用户主动下拉/展开状态栏时使用，不清理系统通知） */
+    /*  仅隐藏 overlay（用户主动下拉/展开状态栏时使用，不清理系统通知）  */
     /* ================================================================ */
     private void hideOverlayOnly() {
         cancelAllAnimations();
@@ -1251,11 +1269,12 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         // 4. 【v26 修复】透明盾牌：延迟移除窗口，防止触摸落到系统残留通知
-        //    LineageOS 20 GSI 横屏下系统通知渲染损坏但触摸管道完好，
-        //    立即 removeView 后点击原位置会触发系统通知的 PendingIntent。
-        //    保持透明窗口 400ms 拦截触摸，同时立即清空引用让新通知可创建。
+        //    设置 alpha=0f 前先清理 RenderEffect，防止 blur 残留像素
         if (overlayToShield != null) {
             try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    overlayToShield.setRenderEffect(null);
+                }
                 overlayToShield.setAlpha(0f);
                 overlayToShield.setOnTouchListener((v, event) -> true); // 消费所有触摸
             } catch (Throwable ignored) {}
@@ -1286,5 +1305,6 @@ public class MainHook implements IXposedHookLoadPackage {
         mCurrentRowView = null;
         mCurrentOverlay = null;
         mCurrentContentHash = null;
+        mLastAppliedBlur = -1f; // 【v26】重置 blur 缓存
     }
 }
