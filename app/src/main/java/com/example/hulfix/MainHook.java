@@ -126,6 +126,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookPanelExpansion(lpparam);
         captureHeadsUpManager(lpparam);
         captureStatusBar(lpparam);
+        hookNotificationEntry(lpparam);
     }
 
     private void captureHeadsUpManager(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -142,6 +143,72 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": HeadsUpManager capture failed: " + t);
         }
+    }
+
+    private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> entryManagerClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.NotificationEntryManager", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(entryManagerClass, "addNotification",
+                StatusBarNotification.class, XposedHelpers.findClass("android.service.notification.NotificationListenerService.RankingMap", lpparam.classLoader),
+                new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        StatusBarNotification sbn = (StatusBarNotification) param.args[0];
+                        if (sbn == null) return;
+                        processNotification(sbn);
+                    }
+                });
+            XposedBridge.log(TAG + ": NotificationEntryManager.addNotification hooked");
+        } catch (Throwable t1) {
+            try {
+                Class<?> statusBarClass = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
+                XposedHelpers.findAndHookMethod(statusBarClass, "addNotification",
+                    String.class, StatusBarNotification.class,
+                    new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam param) {
+                            StatusBarNotification sbn = (StatusBarNotification) param.args[1];
+                            if (sbn == null) return;
+                            processNotification(sbn);
+                        }
+                    });
+                XposedBridge.log(TAG + ": StatusBar.addNotification hooked (fallback)");
+            } catch (Throwable t2) {
+                XposedBridge.log(TAG + ": hookNotificationEntry failed: " + t2);
+            }
+        }
+    }
+
+    private void processNotification(StatusBarNotification sbn) {
+        if (sbn == null) return;
+        final String key = sbn.getKey();
+        final Notification notification = sbn.getNotification();
+
+        // 过滤黑名单
+        if (BLOCK_PKG.equals(sbn.getPackageName())) return;
+
+        // 过滤常驻通知（ONGOING_EVENT, FOREGROUND_SERVICE）
+        if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
+        if ((notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) return;
+
+        // 过滤旧通知（非新鲜）
+        if (!isFreshNotification(sbn)) return;
+
+        // 检查是否被用户手动忽略
+        if (key.equals(mUserDismissedKey)
+            && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS) return;
+
+        // 检查全局冷却
+        if (isGlobalCooldown()) return;
+
+        // 检查面板展开
+        if (isStatusBarExpanded()) return;
+
+        // 锁屏不显示
+        if (isKeyguardLocked()) return;
+
+        // 显示自定义 Heads-Up
+        showCustomHeadsUp(sbn);
     }
 
     private void captureStatusBar(XC_LoadPackage.LoadPackageParam lpparam) {
