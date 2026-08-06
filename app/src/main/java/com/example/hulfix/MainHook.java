@@ -27,8 +27,10 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.ImageView;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.graphics.Bitmap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -89,6 +91,14 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private boolean mIsPanelExpanded = false;
 
+    private View mContentView = null;
+    private ImageView mBgImageView = null;
+    private Bitmap mBlurredBgBitmap = null;
+    private Runnable mBgUpdateRunnable = null;
+    private static final long BG_UPDATE_INTERVAL_MS = 500;
+    private static final float BLUR_RADIUS = 10f;
+    private static final int BLUR_SCALE_FACTOR = 4;
+
     private View mShieldView = null;
     private String mShieldKey = null;
     private Runnable mShieldRemoveRunnable = null;
@@ -97,7 +107,7 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v23 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v24 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
@@ -418,20 +428,23 @@ public class MainHook implements IXposedHookLoadPackage {
         view.setTranslationX(0f);
         view.setScaleX(0.96f);
         view.setScaleY(0.96f);
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(160);
-        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.0f));
+        mEnterAnim.setDuration(200);
+        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.2f));
         mEnterAnim.addUpdateListener(anim -> {
             float ease = (float) anim.getAnimatedValue();
-            view.setAlpha(ease);
-            view.setTranslationY(-40f * (1f - ease));
-            view.setScaleX(0.96f + 0.04f * ease);
-            view.setScaleY(0.96f + 0.04f * ease);
+            float decel = 1f - (1f - ease) * (1f - ease);
+            view.setAlpha(decel);
+            view.setTranslationY(-40f * (1f - decel));
+            view.setScaleX(0.96f + 0.04f * decel);
+            view.setScaleY(0.96f + 0.04f * decel);
         });
         mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 if (mEnterAnim == null) return;
                 mEnterAnim = null;
+                view.setLayerType(View.LAYER_TYPE_NONE, null);
             }
         });
         mEnterAnim.start();
@@ -439,23 +452,25 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void startExitAnimation(final View view, final Runnable onEnd, final int exitDirection) {
         cancelAllAnimations();
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mExitAnim = ValueAnimator.ofFloat(0f, 1f);
-        mExitAnim.setDuration(128);
-        mExitAnim.setInterpolator(new DecelerateInterpolator(1.0f));
+        mExitAnim.setDuration(180);
+        mExitAnim.setInterpolator(new DecelerateInterpolator(1.5f));
         mExitAnim.addUpdateListener(anim -> {
             float ease = (float) anim.getAnimatedValue();
             float realEase = ease * ease;
             view.setAlpha(1f - realEase);
             switch (exitDirection) {
-                case 1: view.setTranslationY(-80f * realEase); view.setTranslationX(0f); break;
-                case 2: view.setTranslationX(80f * realEase); view.setTranslationY(0f); break;
-                default: view.setTranslationX(-80f * realEase); view.setTranslationY(0f); break;
+                case 1: view.setTranslationY(-120f * realEase); view.setTranslationX(0f); break;
+                case 2: view.setTranslationX(120f * realEase); view.setTranslationY(0f); break;
+                default: view.setTranslationX(-120f * realEase); view.setTranslationY(0f); break;
             }
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 if (mExitAnim == null) return;
                 mExitAnim = null;
+                view.setLayerType(View.LAYER_TYPE_NONE, null);
                 if (onEnd != null) onEnd.run();
             }
         });
@@ -464,14 +479,15 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void startBounceAnimation(final View view, final float direction) {
         cancelAllAnimations();
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mBounceAnim = ValueAnimator.ofFloat(0f, 1f);
-        mBounceAnim.setDuration(300);
+        mBounceAnim.setDuration(350);
         mBounceAnim.setInterpolator(null);
         mBounceAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            float decay = (float) Math.exp(-5 * t);
-            float oscillation = (float) Math.sin(t * Math.PI * 3);
-            float offset = 18f * decay * oscillation * direction;
+            float decay = (float) Math.exp(-6 * t);
+            float oscillation = (float) Math.sin(t * Math.PI * 3.5);
+            float offset = 22f * decay * oscillation * direction;
             view.setTranslationX(offset);
             view.setAlpha(1f);
         });
@@ -480,6 +496,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (mBounceAnim == null) return;
                 mBounceAnim = null;
                 view.setTranslationX(0f);
+                view.setLayerType(View.LAYER_TYPE_NONE, null);
             }
         });
         mBounceAnim.start();
@@ -512,18 +529,25 @@ public class MainHook implements IXposedHookLoadPackage {
                 mCurrentContentHash = newHash;
 
                 boolean isDark = isDarkMode();
-                int glassBaseColor = isDark ? 0x30000000 : 0x30FFFFFF;
-                int edgeColor = isDark ? 0x35FFFFFF : 0x50FFFFFF;
-                int topHighlightStart = isDark ? 0x30FFFFFF : 0x60FFFFFF;
-                int bottomGlowEnd = isDark ? 0x15FFFFFF : 0x20FFFFFF;
+                int glassBaseColor = isDark ? 0x12000000 : 0x15FFFFFF;
+                int edgeColor = isDark ? 0x30FFFFFF : 0x45FFFFFF;
+                int topHighlightStart = isDark ? 0x25FFFFFF : 0x50FFFFFF;
+                int bottomGlowEnd = isDark ? 0x10FFFFFF : 0x15FFFFFF;
                 int textColorPrimary = isDark ? 0xFFFFFFFF : 0xFF000000;
                 int textColorSecondary = isDark ? 0xFFCCCCCC : 0xFF333333;
 
-                LinearLayout container = new LinearLayout(mContext);
-                container.setOrientation(LinearLayout.HORIZONTAL);
-                container.setPadding(20, 14, 20, 14);
-                container.setGravity(Gravity.CENTER_VERTICAL);
+                // === 根容器：FrameLayout ===
+                FrameLayout root = new FrameLayout(mContext);
+                root.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
 
+                // === 第1层：模糊背景 ImageView ===
+                ImageView bgView = new ImageView(mContext);
+                bgView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                bgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                root.addView(bgView);
+                mBgImageView = bgView;
+
+                // === 第2层：毛玻璃效果层 ===
                 GradientDrawable bg = new GradientDrawable();
                 bg.setShape(GradientDrawable.RECTANGLE);
                 bg.setCornerRadius(28);
@@ -562,8 +586,18 @@ public class MainHook implements IXposedHookLoadPackage {
                 android.graphics.drawable.LayerDrawable glassBg =
                     new android.graphics.drawable.LayerDrawable(
                         new android.graphics.drawable.Drawable[] { bg, topHighlight, bottomGlow, edgeGlow, innerShadow, bottomShadow });
-                container.setBackground(glassBg);
-                container.setElevation(12);
+                View glassOverlay = new View(mContext);
+                glassOverlay.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                glassOverlay.setBackground(glassBg);
+                root.addView(glassOverlay);
+
+                // === 第3层：内容容器（可移动）===
+                LinearLayout contentContainer = new LinearLayout(mContext);
+                contentContainer.setOrientation(LinearLayout.HORIZONTAL);
+                contentContainer.setPadding(20, 14, 20, 14);
+                contentContainer.setGravity(Gravity.CENTER_VERTICAL);
+                contentContainer.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                contentContainer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
                 ImageView iconView = new ImageView(mContext);
                 android.graphics.drawable.Icon icon = notification.getSmallIcon();
@@ -571,7 +605,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(44, 44);
                 iconLp.gravity = Gravity.CENTER_VERTICAL;
                 iconView.setLayoutParams(iconLp);
-                container.addView(iconView);
+                contentContainer.addView(iconView);
 
                 LinearLayout textContainer = new LinearLayout(mContext);
                 textContainer.setOrientation(LinearLayout.VERTICAL);
@@ -596,7 +630,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 contentView.setMaxLines(1);
                 contentView.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 textContainer.addView(contentView);
-                container.addView(textContainer);
+                contentContainer.addView(textContainer);
 
                 TextView readBtn = new TextView(mContext);
                 readBtn.setText("已读");
@@ -614,9 +648,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     } catch (Exception ignored) {}
                     dismissOverlayAnimated(1);
                 });
-                container.addView(readBtn);
+                contentContainer.addView(readBtn);
 
-                container.setOnTouchListener(new View.OnTouchListener() {
+                root.addView(contentContainer);
+                mContentView = contentContainer;
+
+                // === 触摸事件处理（只移动 contentContainer）===
+                contentContainer.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
                     boolean lockedHorizontal = false;
                     boolean lockedVertical = false;
@@ -736,11 +774,16 @@ public class MainHook implements IXposedHookLoadPackage {
                 params.x = WIN_X;
                 params.y = WIN_Y;
 
-                mWindowManager.addView(container, params);
+                mWindowManager.addView(root, params);
                 mCurrentKey = key;
-                mCurrentOverlay = container;
+                mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
-                startEnterAnimation(container);
+
+                // 首次截屏+模糊
+                updateBackground();
+                startBackgroundUpdate();
+
+                startEnterAnimation(contentContainer);
                 mAutoDismissRunnable = () -> dismissOverlayAnimated(1);
                 mHandler.postDelayed(mAutoDismissRunnable, AUTO_DISMISS_MS);
             } catch (Throwable t) {
@@ -798,6 +841,108 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
+    private Bitmap captureScreenBackground() {
+        try {
+            Class<?> scClass = Class.forName("android.view.SurfaceControl");
+            Bitmap screenshot = null;
+            try {
+                screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot");
+            } catch (Throwable t1) {
+                try {
+                    screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot", WIN_W, WIN_H);
+                } catch (Throwable t2) {
+                    try {
+                        Object rect = android.graphics.Rect.class.getConstructor(int.class, int.class, int.class, int.class)
+                            .newInstance(WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H);
+                        screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot", rect);
+                    } catch (Throwable t3) { return null; }
+                }
+            }
+            if (screenshot != null) {
+                int x = WIN_X, y = WIN_Y, w = WIN_W, h = WIN_H;
+                if (x + w > screenshot.getWidth()) w = screenshot.getWidth() - x;
+                if (y + h > screenshot.getHeight()) h = screenshot.getHeight() - y;
+                if (w > 0 && h > 0) {
+                    Bitmap cropped = Bitmap.createBitmap(screenshot, x, y, w, h);
+                    screenshot.recycle();
+                    return cropped;
+                }
+                return screenshot;
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": captureScreenBackground failed: " + t);
+        }
+        return null;
+    }
+
+    private Bitmap fastBlur(Bitmap input) {
+        if (input == null) return null;
+        try {
+            int w = input.getWidth(), h = input.getHeight();
+            int smallW = Math.max(1, w / BLUR_SCALE_FACTOR);
+            int smallH = Math.max(1, h / BLUR_SCALE_FACTOR);
+            Bitmap small = Bitmap.createScaledBitmap(input, smallW, smallH, false);
+            android.renderscript.RenderScript rs = android.renderscript.RenderScript.create(mContext);
+            android.renderscript.Allocation inputAlloc = android.renderscript.Allocation.createFromBitmap(rs, small);
+            android.renderscript.Allocation outputAlloc = android.renderscript.Allocation.createTyped(rs, inputAlloc.getType());
+            android.renderscript.ScriptIntrinsicBlur blur = android.renderscript.ScriptIntrinsicBlur.create(
+                rs, android.renderscript.Element.U8_4(rs));
+            blur.setRadius(BLUR_RADIUS);
+            blur.setInput(inputAlloc);
+            blur.forEach(outputAlloc);
+            Bitmap blurredSmall = Bitmap.createBitmap(smallW, smallH, small.getConfig());
+            outputAlloc.copyTo(blurredSmall);
+            rs.destroy();
+            blur.destroy();
+            inputAlloc.destroy();
+            outputAlloc.destroy();
+            small.recycle();
+            Bitmap result = Bitmap.createScaledBitmap(blurredSmall, w, h, true);
+            blurredSmall.recycle();
+            return result;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": fastBlur failed: " + t);
+            return input;
+        }
+    }
+
+    private void updateBackground() {
+        if (mBgImageView == null || mCurrentOverlay == null || mCurrentOverlay.getParent() == null) return;
+        if (mContentView != null && (mContentView.getTranslationX() != 0f || mContentView.getTranslationY() != 0f)) return;
+        Bitmap screen = captureScreenBackground();
+        if (screen == null) return;
+        Bitmap blurred = fastBlur(screen);
+        screen.recycle();
+        if (blurred == null) return;
+        Bitmap oldBmp = mBlurredBgBitmap;
+        mBlurredBgBitmap = blurred;
+        mHandler.post(() -> {
+            try {
+                if (mBgImageView != null) mBgImageView.setImageBitmap(blurred);
+                if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": updateBackground post error: " + t);
+            }
+        });
+    }
+
+    private void startBackgroundUpdate() {
+        stopBackgroundUpdate();
+        mBgUpdateRunnable = () -> {
+            if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) return;
+            updateBackground();
+            mHandler.postDelayed(mBgUpdateRunnable, BG_UPDATE_INTERVAL_MS);
+        };
+        mHandler.postDelayed(mBgUpdateRunnable, BG_UPDATE_INTERVAL_MS);
+    }
+
+    private void stopBackgroundUpdate() {
+        if (mBgUpdateRunnable != null) {
+            mHandler.removeCallbacks(mBgUpdateRunnable);
+            mBgUpdateRunnable = null;
+        }
+    }
+
     private void showShieldOnly(String key) {
         if (mContext == null || mWindowManager == null) return;
         if (mShieldView != null && key.equals(mShieldKey)) return;
@@ -848,6 +993,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void removeOverlayImmediate() {
         cancelAllAnimations();
+        stopBackgroundUpdate();
         if (mAutoDismissRunnable != null) {
             mHandler.removeCallbacks(mAutoDismissRunnable);
             mAutoDismissRunnable = null;
@@ -857,7 +1003,7 @@ public class MainHook implements IXposedHookLoadPackage {
         final View overlayToShield = mCurrentOverlay;
         removeSystemHeadsUpEntry(keyToRemove);
         removeSystemNotificationView(keyToRemove);
-        if (rowViewSnapshot != null) {
+         if (rowViewSnapshot != null) {
             try { XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUp", false); }
             catch (Throwable t1) {
                 try { XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUpAnimatingAway", true); }
@@ -867,7 +1013,7 @@ public class MainHook implements IXposedHookLoadPackage {
         if (overlayToShield != null) {
             try {
                 overlayToShield.setAlpha(0f);
-                overlayToShield.setOnTouchListener((v, event) -> false);
+                if (mContentView != null) mContentView.setOnTouchListener(null);
             } catch (Throwable ignored) {}
             mHandler.postDelayed(() -> {
                 try {
@@ -877,6 +1023,12 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             }, SHIELD_DELAY_MS);
         }
+        if (mBlurredBgBitmap != null) {
+            try { if (!mBlurredBgBitmap.isRecycled()) mBlurredBgBitmap.recycle(); } catch (Throwable ignored) {}
+            mBlurredBgBitmap = null;
+        }
+        mBgImageView = null;
+        mContentView = null;
         if (keyToRemove != null) mLastDismissTime = SystemClock.elapsedRealtime();
         mCurrentKey = null;
         mCurrentRowView = null;
