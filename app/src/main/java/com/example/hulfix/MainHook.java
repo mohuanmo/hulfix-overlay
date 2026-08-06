@@ -107,7 +107,7 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v24 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v25 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
@@ -529,16 +529,17 @@ public class MainHook implements IXposedHookLoadPackage {
                 mCurrentContentHash = newHash;
 
                 boolean isDark = isDarkMode();
-                int glassBaseColor = isDark ? 0x12000000 : 0x15FFFFFF;
-                int edgeColor = isDark ? 0x30FFFFFF : 0x45FFFFFF;
-                int topHighlightStart = isDark ? 0x25FFFFFF : 0x50FFFFFF;
-                int bottomGlowEnd = isDark ? 0x10FFFFFF : 0x15FFFFFF;
+                int glassBaseColor = isDark ? 0x18000000 : 0x1AFFFFFF;
+                int edgeColor = isDark ? 0x40FFFFFF : 0x55FFFFFF;
+                int topHighlightStart = isDark ? 0x35FFFFFF : 0x60FFFFFF;
+                int bottomGlowEnd = isDark ? 0x12FFFFFF : 0x18FFFFFF;
                 int textColorPrimary = isDark ? 0xFFFFFFFF : 0xFF000000;
                 int textColorSecondary = isDark ? 0xFFCCCCCC : 0xFF333333;
 
                 // === 根容器：FrameLayout ===
                 FrameLayout root = new FrameLayout(mContext);
                 root.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                root.setElevation(20f);
 
                 // === 第1层：模糊背景 ImageView ===
                 ImageView bgView = new ImageView(mContext);
@@ -547,45 +548,79 @@ public class MainHook implements IXposedHookLoadPackage {
                 root.addView(bgView);
                 mBgImageView = bgView;
 
-                // === 第2层：毛玻璃效果层 ===
+                // === 第2层：液态玻璃效果层（10层合成）===
+                // 1. 底色
                 GradientDrawable bg = new GradientDrawable();
                 bg.setShape(GradientDrawable.RECTANGLE);
                 bg.setCornerRadius(28);
                 bg.setColor(glassBaseColor);
 
+                // 2. 顶部镜面高光（强反光）
+                GradientDrawable specularHighlight = new GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    new int[] { isDark ? 0x50FFFFFF : 0x70FFFFFF, 0x00FFFFFF });
+                specularHighlight.setShape(GradientDrawable.RECTANGLE);
+                specularHighlight.setCornerRadius(28);
+
+                // 3. 顶部漫反射高光
                 GradientDrawable topHighlight = new GradientDrawable(
                     GradientDrawable.Orientation.TOP_BOTTOM,
                     new int[] { topHighlightStart, 0x00FFFFFF });
                 topHighlight.setShape(GradientDrawable.RECTANGLE);
                 topHighlight.setCornerRadius(28);
 
+                // 4. 内部对角线反射条纹
+                GradientDrawable internalReflect = new GradientDrawable(
+                    GradientDrawable.Orientation.TL_BR,
+                    new int[] { 0x00FFFFFF, isDark ? 0x0AFFFFFF : 0x15FFFFFF, 0x00FFFFFF });
+                internalReflect.setShape(GradientDrawable.RECTANGLE);
+                internalReflect.setCornerRadius(28);
+
+                // 5. 底部光晕
                 GradientDrawable bottomGlow = new GradientDrawable(
                     GradientDrawable.Orientation.BOTTOM_TOP,
                     new int[] { bottomGlowEnd, 0x00FFFFFF });
                 bottomGlow.setShape(GradientDrawable.RECTANGLE);
                 bottomGlow.setCornerRadius(28);
 
+                // 6. 内边缘折射（冷色调-蓝青）
+                GradientDrawable edgeInner = new GradientDrawable();
+                edgeInner.setShape(GradientDrawable.RECTANGLE);
+                edgeInner.setCornerRadius(28);
+                edgeInner.setStroke(1, isDark ? 0x18AADDFF : 0x2288CCFF);
+                edgeInner.setColor(0x00000000);
+
+                // 7. 外边缘折射（暖色调-橙黄）
+                GradientDrawable edgeOuter = new GradientDrawable();
+                edgeOuter.setShape(GradientDrawable.RECTANGLE);
+                edgeOuter.setCornerRadius(28);
+                edgeOuter.setStroke(1, isDark ? 0x18FFCC88 : 0x22FFAA66);
+                edgeOuter.setColor(0x00000000);
+
+                // 8. 主边缘描边
                 GradientDrawable edgeGlow = new GradientDrawable();
                 edgeGlow.setShape(GradientDrawable.RECTANGLE);
                 edgeGlow.setCornerRadius(28);
                 edgeGlow.setStroke(1, edgeColor);
                 edgeGlow.setColor(0x00000000);
 
+                // 9. 内阴影
                 GradientDrawable innerShadow = new GradientDrawable(
                     GradientDrawable.Orientation.TOP_BOTTOM,
                     new int[] { 0x08000000, 0x00000000 });
                 innerShadow.setShape(GradientDrawable.RECTANGLE);
                 innerShadow.setCornerRadius(28);
 
-                GradientDrawable bottomShadow = new GradientDrawable(
+                // 10. 底部投影
+                GradientDrawable dropShadow = new GradientDrawable(
                     GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[] { 0x00000000, isDark ? 0x18000000 : 0x12FFFFFF });
-                bottomShadow.setShape(GradientDrawable.RECTANGLE);
-                bottomShadow.setCornerRadius(28);
+                    new int[] { 0x00000000, isDark ? 0x25000000 : 0x18FFFFFF });
+                dropShadow.setShape(GradientDrawable.RECTANGLE);
+                dropShadow.setCornerRadius(28);
 
                 android.graphics.drawable.LayerDrawable glassBg =
                     new android.graphics.drawable.LayerDrawable(
-                        new android.graphics.drawable.Drawable[] { bg, topHighlight, bottomGlow, edgeGlow, innerShadow, bottomShadow });
+                        new android.graphics.drawable.Drawable[] { bg, specularHighlight, topHighlight, internalReflect, bottomGlow, edgeInner, edgeOuter, edgeGlow, innerShadow, dropShadow });
                 View glassOverlay = new View(mContext);
                 glassOverlay.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 glassOverlay.setBackground(glassBg);
