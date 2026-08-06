@@ -11,8 +11,10 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -25,23 +27,24 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
-    - name: Cache Gradle
+    - name: Setup Gradle with caching
+      uses: gradle/actions/setup-gradle@v3
+      with:
+        gradle-version: 8.0
+        cache-read-only: false
+
+    - name: Cache Gradle dependencies
       uses: actions/cache@v4
       with:
         path: |
           ~/.gradle/caches
           ~/.gradle/wrapper
-        key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          ~/.gradle/daemon
+          ~/.gradle/native
+          ~/.android/build-cache
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
         restore-keys: |
-          gradle-${{ runner.os }}-
-
-    - name: Install Gradle manually
-      run: |
-        wget --tries=3 --timeout=30 https://services.gradle.org/distributions/gradle-8.0-bin.zip -O gradle.zip
-        unzip -q gradle.zip
-        mv gradle-8.0 $HOME/gradle
-        echo "$HOME/gradle/bin" >> $GITHUB_PATH
-        gradle --version
+          ${{ runner.os }}-gradle-
 
     - name: Calculate Version Code
       run: |
@@ -51,11 +54,18 @@ jobs:
 
     - name: Build Debug APK
       run: |
-        gradle assembleDebug --no-daemon --init-script init.gradle --stacktrace -PversionCode=$VERSION_CODE
+        gradle assembleDebug --no-daemon --stacktrace -PversionCode=$VERSION_CODE
+      timeout-minutes: 10
 
-    - name: Verify APK exists
+    - name: Verify APK exists and check size
       run: |
         ls -la app/build/outputs/apk/debug/
+        APK_SIZE=$(stat -c%s app/build/outputs/apk/debug/app-debug.apk)
+        echo "APK size: $APK_SIZE bytes"
+        if [ "$APK_SIZE" -lt 10000 ]; then
+          echo "❌ ERROR: APK size ($APK_SIZE bytes) is too small, build may have failed silently!"
+          exit 1
+        fi
         test -f app/build/outputs/apk/debug/app-debug.apk
 
     - name: Delete old release
