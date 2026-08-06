@@ -83,7 +83,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private View mCurrentRowView = null;
     private String mCurrentContentHash = null;
     private Runnable mAutoDismissRunnable = null;
-    private long mLastDismissTime = 0;
 
     private String mUserDismissedKey = null;
     private long mUserDismissTime = 0;
@@ -180,21 +179,25 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void processNotification(StatusBarNotification sbn) {
-        if (sbn == null) return;
-        final String key = sbn.getKey();
-        final Notification notification = sbn.getNotification();
+        try {
+            if (sbn == null) return;
+            final String key = sbn.getKey();
+            final Notification notification = sbn.getNotification();
 
-        if (BLOCK_PKG.equals(sbn.getPackageName())) return;
-        if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
-        if ((notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) return;
-        if (!isFreshNotification(sbn)) return;
-        if (mUserDismissedKey != null && key.equals(mUserDismissedKey)
-            && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS) return;
-        if (isGlobalCooldown()) return;
-        if (isStatusBarExpanded()) return;
-        if (isKeyguardLocked()) return;
+            if (BLOCK_PKG.equals(sbn.getPackageName())) return;
+            if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
+            if ((notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) return;
+            if (!isFreshNotification(sbn)) return;
+            if (mUserDismissedKey != null && key.equals(mUserDismissedKey)
+                && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS) return;
+            if (isGlobalCooldown()) return;
+            if (isStatusBarExpanded()) return;
+            if (isKeyguardLocked()) return;
 
-        showCustomHeadsUp(sbn);
+            showCustomHeadsUp(sbn);
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": processNotification error: " + t);
+        }
     }
 
     private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -1020,7 +1023,19 @@ public class MainHook implements IXposedHookLoadPackage {
                 params.x = WIN_X;
                 params.y = WIN_Y;
 
-                mWindowManager.addView(root, params);
+                try {
+                    mWindowManager.addView(root, params);
+                } catch (IllegalStateException e) {
+                    XposedBridge.log(TAG + ": addView failed - view already added, removing old first");
+                    removeOverlayImmediate();
+                    try { mWindowManager.addView(root, params); } catch (Throwable t2) {
+                        XposedBridge.log(TAG + ": addView retry failed: " + t2);
+                        return;
+                    }
+                } catch (Throwable e) {
+                    XposedBridge.log(TAG + ": addView failed: " + e);
+                    return;
+                }
                 mCurrentKey = key;
                 mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
@@ -1241,9 +1256,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             }, 50);
         }
-        if (mBlurredBgBitmap != null) {
-            try { if (!mBlurredBgBitmap.isRecycled()) mBlurredBgBitmap.recycle(); } catch (Throwable ignored) {}
-            mBlurredBgBitmap = null;
+        Bitmap oldBitmap = mBlurredBgBitmap;
+        mBlurredBgBitmap = null;
+        if (oldBitmap != null) {
+            try { if (!oldBitmap.isRecycled()) oldBitmap.recycle(); } catch (Throwable ignored) {}
         }
         mBgImageView = null;
         mContentView = null;
@@ -1255,7 +1271,6 @@ public class MainHook implements IXposedHookLoadPackage {
             mGlassView.stopAnimations();
             mGlassView = null;
         }
-        if (keyToRemove != null) mLastDismissTime = SystemClock.elapsedRealtime();
         mCurrentKey = null;
         mCurrentRowView = null;
         mCurrentOverlay = null;
