@@ -100,6 +100,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private ValueAnimator mEnterAnim = null;
     private ValueAnimator mExitAnim = null;
     private ValueAnimator mBounceAnim = null;
+    private float mEnterProgress = 0f;
 
     private float mTouchMaxDx = 0f;
     private float mTouchMaxDy = 0f;
@@ -1306,6 +1307,13 @@ public class MainHook implements IXposedHookLoadPackage {
             mDentRimPaint.setStyle(Paint.Style.STROKE);
 
             startAnimations();
+        }
+
+        public void setCornerRadius(float radius) {
+            mCornerRadius = radius;
+            mClipPath = new android.graphics.Path();
+            mDrawRect = new RectF(0, 0, mViewWidth, mViewHeight);
+            invalidate();
         }
 
         private Bitmap createNoiseBitmap(int w, int h) {
