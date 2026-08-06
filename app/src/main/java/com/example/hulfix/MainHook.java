@@ -115,7 +115,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private Bitmap mBlurredBgBitmap = null;
     private Runnable mBgUpdateRunnable = null;
     private static final long BG_UPDATE_INTERVAL_MS = 500;
-    private static final float BLUR_RADIUS = 10f;
+    private static final float BLUR_RADIUS = 22f;
     private static final int BLUR_SCALE_FACTOR = 4;
 
 
@@ -127,6 +127,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
         hookHeadsUpRowTouch(lpparam);
+        hookPanelExpansion(lpparam);
         captureHeadsUpManager(lpparam);
         captureStatusBar(lpparam);
     }
@@ -425,6 +426,155 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": hookHeadsUpRowTouch failed: " + t);
         }
+    }
+
+
+    private void hookPanelExpansion(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 路径1: NotificationPanelViewController.onPanelExpansionChanged (Android 13 最常用)
+        try {
+            Class<?> npvcClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.NotificationPanelViewController", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(npvcClass, "onPanelExpansionChanged",
+                float.class, boolean.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        float fraction = (float) param.args[0];
+                        if (fraction > 0.05f) {
+                            mIsPanelExpanded = true;
+                            triggerGlobalCooldown();
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + ": NotificationPanelViewController.onPanelExpansionChanged hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook onPanelExpansionChanged skipped: " + t); }
+
+        // 路径2: PanelView.setExpandedFraction
+        try {
+            Class<?> panelViewClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.PanelView", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(panelViewClass, "setExpandedFraction",
+                float.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        float fraction = (float) param.args[0];
+                        if (fraction > 0.05f) {
+                            mIsPanelExpanded = true;
+                            triggerGlobalCooldown();
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + ": PanelView.setExpandedFraction hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook setExpandedFraction skipped: " + t); }
+
+        // 路径3: PanelView.setExpandedHeight
+        try {
+            Class<?> panelViewClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.PanelView", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(panelViewClass, "setExpandedHeight",
+                float.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        float height = (float) param.args[0];
+                        if (height > 10f) {
+                            mIsPanelExpanded = true;
+                            triggerGlobalCooldown();
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + ": PanelView.setExpandedHeight hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook setExpandedHeight skipped: " + t); }
+
+        // 路径4: ShadeController / ShadeControllerImpl.expandNotificationShade
+        try {
+            Class<?> shadeClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.ShadeControllerImpl", lpparam.classLoader);
+            XposedBridge.hookAllMethods(shadeClass, "expandNotificationShade", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    mIsPanelExpanded = true;
+                    triggerGlobalCooldown();
+                }
+            });
+            XposedBridge.log(TAG + ": ShadeControllerImpl.expandNotificationShade hooked");
+        } catch (Throwable t) {
+            try {
+                Class<?> shadeClass2 = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.phone.ShadeController", lpparam.classLoader);
+                XposedBridge.hookAllMethods(shadeClass2, "expandNotificationShade", new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        mIsPanelExpanded = true;
+                        triggerGlobalCooldown();
+                    }
+                });
+                XposedBridge.log(TAG + ": ShadeController.expandNotificationShade hooked");
+            } catch (Throwable t2) { XposedBridge.log(TAG + ": hook expandNotificationShade skipped: " + t2); }
+        }
+
+        // 路径5: CentralSurfacesImpl.expandNotificationsPanel (Android 13 新架构)
+        try {
+            Class<?> csClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.CentralSurfacesImpl", lpparam.classLoader);
+            XposedBridge.hookAllMethods(csClass, "expandNotificationsPanel", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    mIsPanelExpanded = true;
+                    triggerGlobalCooldown();
+                }
+            });
+            XposedBridge.log(TAG + ": CentralSurfacesImpl.expandNotificationsPanel hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook CentralSurfacesImpl skipped: " + t); }
+
+        // 路径6: NotificationPanelView.onTouchEvent (从顶部直接下滑)
+        try {
+            Class<?> npvClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.NotificationPanelView", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(npvClass, "onTouchEvent",
+                MotionEvent.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        MotionEvent ev = (MotionEvent) param.args[0];
+                        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+                            if (ev.getY() < 80f) {
+                                mIsPanelExpanded = true;
+                                triggerGlobalCooldown();
+                            }
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + ": NotificationPanelView.onTouchEvent hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationPanelView.onTouchEvent skipped: " + t); }
+
+        // 路径7: PanelView.onTouchEvent (通用面板触摸)
+        try {
+            Class<?> pvClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.PanelView", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(pvClass, "onTouchEvent",
+                MotionEvent.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        MotionEvent ev = (MotionEvent) param.args[0];
+                        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+                            if (ev.getY() < 80f) {
+                                mIsPanelExpanded = true;
+                                triggerGlobalCooldown();
+                            }
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + ": PanelView.onTouchEvent hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook PanelView.onTouchEvent skipped: " + t); }
+
+        // 路径8: StatusBarWindowView.onTouchEvent (状态栏窗口触摸)
+        try {
+            Class<?> sbwvClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.StatusBarWindowView", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(sbwvClass, "onTouchEvent",
+                MotionEvent.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        MotionEvent ev = (MotionEvent) param.args[0];
+                        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+                            if (ev.getY() < 80f) {
+                                mIsPanelExpanded = true;
+                                triggerGlobalCooldown();
+                            }
+                        }
+                    }
+                });
+            XposedBridge.log(TAG + ": StatusBarWindowView.onTouchEvent hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook StatusBarWindowView.onTouchEvent skipped: " + t); }
     }
 
     private StatusBarNotification getSbnFromRow(View rowView) {
@@ -926,6 +1076,31 @@ public class MainHook implements IXposedHookLoadPackage {
             small.recycle();
             Bitmap result = Bitmap.createScaledBitmap(blurredSmall, w, h, true);
             blurredSmall.recycle();
+            // 叠加磨砂噪点
+            try {
+                Canvas noiseCanvas = new Canvas(result);
+                Paint noisePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                noisePaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
+                noisePaint.setAlpha(18);
+                java.util.Random rnd = new java.util.Random(42);
+                for (int i = 0; i < 400; i++) {
+                    float nx = rnd.nextFloat() * w;
+                    float ny = rnd.nextFloat() * h;
+                    float nr = 0.5f + rnd.nextFloat() * 1.5f;
+                    int na = 8 + rnd.nextInt(20);
+                    noisePaint.setColor(Color.argb(na, 255, 255, 255));
+                    noiseCanvas.drawCircle(nx, ny, nr, noisePaint);
+                }
+                for (int i = 0; i < 200; i++) {
+                    float nx = rnd.nextFloat() * w;
+                    float ny = rnd.nextFloat() * h;
+                    float nr = 0.3f + rnd.nextFloat() * 0.8f;
+                    int na = 5 + rnd.nextInt(12);
+                    noisePaint.setColor(Color.argb(na, 0, 0, 0));
+                    noiseCanvas.drawCircle(nx, ny, nr, noisePaint);
+                }
+                noisePaint.setXfermode(null);
+            } catch (Throwable t) {}
             return result;
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": fastBlur failed: " + t);
