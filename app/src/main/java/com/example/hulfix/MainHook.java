@@ -638,41 +638,44 @@ public class MainHook implements IXposedHookLoadPackage {
     /*  入场动画                                                        */
     /* ================================================================ */
     private void startEnterAnimation(final View view) {
-        cancelAllAnimations();
-        view.setAlpha(0f);
-        view.setTranslationY(-40f);
-        view.setTranslationX(0f);
-        view.setScaleX(0.96f);
-        view.setScaleY(0.96f);
+        mHandler.post(() -> {
+            cancelAllAnimations();
+            view.setAlpha(0f);
+            view.setTranslationY(-40f);
+            view.setTranslationX(0f);
+            view.setScaleX(0.96f);
+            view.setScaleY(0.96f);
 
-        mEnterAnimRunnable = new Runnable() {
-            int step = 0;
-            final int totalSteps = 10;
-            final long stepMs = 16;
+            mEnterAnimRunnable = new Runnable() {
+                int step = 0;
+                final int totalSteps = 10;
+                final long stepMs = 16;
 
-            @Override
-            public void run() {
-                step++;
-                float f = step / (float) totalSteps;
-                float ease = 1f - (1f - f) * (1f - f);
-                view.setAlpha(ease);
-                view.setTranslationY(-40f * (1f - ease));
-                view.setScaleX(0.96f + 0.04f * ease);
-                view.setScaleY(0.96f + 0.04f * ease);
-                if (step < totalSteps) {
-                    mHandler.postDelayed(this, stepMs);
-                } else {
-                    mEnterAnimRunnable = null;
+                @Override
+                public void run() {
+                    if (mEnterAnimRunnable != this) return;
+                    step++;
+                    float f = step / (float) totalSteps;
+                    float ease = 1f - (1f - f) * (1f - f);
+                    view.setAlpha(ease);
+                    view.setTranslationY(-40f * (1f - ease));
+                    view.setScaleX(0.96f + 0.04f * ease);
+                    view.setScaleY(0.96f + 0.04f * ease);
+                    if (step < totalSteps) {
+                        mHandler.postDelayed(this, stepMs);
+                    } else {
+                        mEnterAnimRunnable = null;
+                    }
                 }
-            }
-        };
-        mHandler.post(mEnterAnimRunnable);
+            };
+            mHandler.post(mEnterAnimRunnable);
+        });
     }
 
     /* ================================================================ */
     /*  离场动画                                                        */
     /* ================================================================ */
-    private void startExitAnimation(final View view, final Runnable onEnd) {
+    private void startExitAnimation(final View view, final Runnable onEnd, final boolean slideUpward) {
         cancelAllAnimations();
         mExitAnimRunnable = new Runnable() {
             int step = 0;
@@ -681,11 +684,16 @@ public class MainHook implements IXposedHookLoadPackage {
 
             @Override
             public void run() {
+                if (mExitAnimRunnable != this) return;
                 step++;
                 float f = step / (float) totalSteps;
                 float ease = f * f;
                 view.setAlpha(1f - ease);
-                view.setTranslationX(-80f * ease);
+                if (slideUpward) {
+                    view.setTranslationY(-80f * ease);
+                } else {
+                    view.setTranslationX(-80f * ease);
+                }
                 if (step < totalSteps) {
                     mHandler.postDelayed(this, stepMs);
                 } else {
@@ -700,7 +708,7 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ================================================================ */
     /*  回弹动画                                                        */
     /* ================================================================ */
-    private void startBounceAnimation(final View view) {
+    private void startBounceAnimation(final View view, final float direction) {
         cancelAllAnimations();
         mBounceAnimRunnable = new Runnable() {
             int step = 0;
@@ -709,10 +717,11 @@ public class MainHook implements IXposedHookLoadPackage {
 
             @Override
             public void run() {
+                if (mBounceAnimRunnable != this) return;
                 step++;
                 float f = step / (float) totalSteps;
                 float sin = (float) Math.sin(f * Math.PI);
-                float offset = 18f * sin * (1f - f);
+                float offset = 18f * sin * (1f - f) * direction;
                 view.setTranslationX(offset);
                 view.setAlpha(1f);
                 if (step < totalSteps) {
@@ -974,7 +983,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     XposedBridge.log(TAG + ": Swipe intent detected (maxDx=" + mTouchMaxDx
                                         + ", maxDy=" + mTouchMaxDy + ", vx=" + velocityX + ", vy=" + velocityY
                                         + "), bounce back");
-                                    startBounceAnimation(v);
+                                    startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
                                     return true;
                                 }
 
@@ -985,7 +994,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     return true;
                                 }
 
-                                startBounceAnimation(v);
+                                startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
                                 return true;
                         }
                         return false;
@@ -1015,7 +1024,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 startEnterAnimation(container);
 
-                mAutoDismissRunnable = () -> dismissOverlayAnimated();
+                mAutoDismissRunnable = () -> dismissOverlayAnimated(true);
                 mHandler.postDelayed(mAutoDismissRunnable, AUTO_DISMISS_MS);
 
             } catch (Throwable t) {
@@ -1075,6 +1084,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
     /* ===== 带动画的移除 ===== */
     private void dismissOverlayAnimated() {
+        dismissOverlayAnimated(false);
+    }
+
+    private void dismissOverlayAnimated(final boolean slideUpward) {
         if (mHandler == null) return;
         mHandler.post(() -> {
             if (mAutoDismissRunnable != null) {
@@ -1087,7 +1100,7 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             startExitAnimation(mCurrentOverlay, () -> {
                 removeOverlayImmediate();
-            });
+            }, slideUpward);
         });
     }
 
@@ -1100,6 +1113,15 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mAutoDismissRunnable != null) {
             mHandler.removeCallbacks(mAutoDismissRunnable);
             mAutoDismissRunnable = null;
+        }
+
+        // 重置视觉状态，防止动画中途被掐断导致属性残留
+        if (mCurrentOverlay != null) {
+            mCurrentOverlay.setAlpha(1f);
+            mCurrentOverlay.setTranslationX(0f);
+            mCurrentOverlay.setTranslationY(0f);
+            mCurrentOverlay.setScaleX(1f);
+            mCurrentOverlay.setScaleY(1f);
         }
 
         // 重置 rowView 状态，让系统知道 overlay 已隐藏
