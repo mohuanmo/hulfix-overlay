@@ -40,7 +40,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final String TAG = "HULFix";
     private static final long AUTO_DISMISS_MS = 6000;
     private static final long COOLDOWN_MS = 3000;
-    private static final long NOTIFICATION_MAX_AGE_MS = 3000;
+    private static final long NOTIFICATION_MAX_AGE_MS = 8000;
 
     private static final int WIN_X = 1386;
     private static final int WIN_Y = 77;
@@ -53,6 +53,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float MIN_FLING_VELOCITY = 200f;
     private static final long SHIELD_DELAY_MS = 400;
     private static final float SWIPE_INTENT_THRESHOLD = 40f;
+    private static final float CLICK_THRESHOLD = 12f;
 
     private static final String BLOCK_PKG = "com.omarea.vtools";
     private static final int WINDOW_TYPE = 2017;
@@ -91,7 +92,7 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v27 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v22 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
@@ -177,7 +178,13 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStopped", new XC_MethodHook() {
                     @Override protected void afterHookedMethod(MethodHookParam param) {
-                        mIsPanelExpanded = false;
+                        if (mStatusBar != null) {
+                            try {
+                                mIsPanelExpanded = XposedHelpers.getBooleanField(mStatusBar, "mExpandedVisible");
+                            } catch (Throwable t) {
+                                mIsPanelExpanded = false;
+                            }
+                        }
                     }
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook PanelViewController skipped: " + t); }
@@ -362,9 +369,15 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void cancelAllAnimations() {
-        if (mEnterAnim != null) { mEnterAnim.cancel(); mEnterAnim = null; }
-        if (mExitAnim != null) { mExitAnim.cancel(); mExitAnim = null; }
-        if (mBounceAnim != null) { mBounceAnim.cancel(); mBounceAnim = null; }
+        ValueAnimator enter = mEnterAnim;
+        ValueAnimator exit = mExitAnim;
+        ValueAnimator bounce = mBounceAnim;
+        mEnterAnim = null;
+        mExitAnim = null;
+        mBounceAnim = null;
+        if (enter != null) enter.cancel();
+        if (exit != null) exit.cancel();
+        if (bounce != null) bounce.cancel();
         if (mCurrentOverlay != null) {
             mCurrentOverlay.setAlpha(1f);
             mCurrentOverlay.setTranslationX(0f);
@@ -375,28 +388,29 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void startEnterAnimation(final View view) {
-        mHandler.post(() -> {
-            cancelAllAnimations();
-            view.setAlpha(0f);
-            view.setTranslationY(-40f);
-            view.setTranslationX(0f);
-            view.setScaleX(0.96f);
-            view.setScaleY(0.96f);
-            mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-            mEnterAnim.setDuration(160);
-            mEnterAnim.setInterpolator(new DecelerateInterpolator(1.0f));
-            mEnterAnim.addUpdateListener(anim -> {
-                float ease = (float) anim.getAnimatedValue();
-                view.setAlpha(ease);
-                view.setTranslationY(-40f * (1f - ease));
-                view.setScaleX(0.96f + 0.04f * ease);
-                view.setScaleY(0.96f + 0.04f * ease);
-            });
-            mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
-                @Override public void onAnimationEnd(android.animation.Animator animation) { mEnterAnim = null; }
-            });
-            mEnterAnim.start();
+        cancelAllAnimations();
+        view.setAlpha(0f);
+        view.setTranslationY(-40f);
+        view.setTranslationX(0f);
+        view.setScaleX(0.96f);
+        view.setScaleY(0.96f);
+        mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
+        mEnterAnim.setDuration(160);
+        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.0f));
+        mEnterAnim.addUpdateListener(anim -> {
+            float ease = (float) anim.getAnimatedValue();
+            view.setAlpha(ease);
+            view.setTranslationY(-40f * (1f - ease));
+            view.setScaleX(0.96f + 0.04f * ease);
+            view.setScaleY(0.96f + 0.04f * ease);
         });
+        mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (mEnterAnim == null) return;
+                mEnterAnim = null;
+            }
+        });
+        mEnterAnim.start();
     }
 
     private void startExitAnimation(final View view, final Runnable onEnd, final boolean slideUpward) {
@@ -413,6 +427,7 @@ public class MainHook implements IXposedHookLoadPackage {
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (mExitAnim == null) return;
                 mExitAnim = null;
                 if (onEnd != null) onEnd.run();
             }
@@ -435,6 +450,7 @@ public class MainHook implements IXposedHookLoadPackage {
         });
         mBounceAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (mBounceAnim == null) return;
                 mBounceAnim = null;
                 view.setTranslationX(0f);
             }
@@ -454,14 +470,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
-                removeSystemHeadsUpEntry(key);
                 Bundle extras = notification.extras;
                 String title = extras.getString(Notification.EXTRA_TITLE, "");
                 CharSequence text = extras.getCharSequence(Notification.EXTRA_TEXT, "");
                 CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "");
-                String content = bigText.length() > 0 ? bigText.toString() : text.toString();
+                String content = (bigText != null && bigText.length() > 0) ? bigText.toString() : text.toString();
                 String newContent = title + "|" + content;
-                String newHash = Integer.toHexString(newContent.hashCode());
+                String newHash = Integer.toHexString(newContent.hashCode() & 0x7FFFFFFF);
 
                 if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
                     if (newHash.equals(mCurrentContentHash)) return;
@@ -603,6 +618,17 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 v.setAlpha(Math.max(0.5f, 1f - dist / 300f));
                                 return true;
+                            case MotionEvent.ACTION_CANCEL:
+                                if (mVelocityTracker != null) {
+                                    mVelocityTracker.recycle();
+                                    mVelocityTracker = null;
+                                }
+                                v.animate().scaleX(1f).scaleY(1f)
+                                    .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
+                                v.setTranslationX(0f);
+                                v.setTranslationY(0f);
+                                v.setAlpha(1f);
+                                return true;
                             case MotionEvent.ACTION_UP:
                                 v.animate().scaleX(1f).scaleY(1f)
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
@@ -623,13 +649,25 @@ public class MainHook implements IXposedHookLoadPackage {
                                 else isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
 
                                 if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
-                                    dismissOverlayAnimated(); return true;
+                                    if (mCurrentKey != null) {
+                                        mUserDismissedKey = mCurrentKey;
+                                        mUserDismissTime = SystemClock.elapsedRealtime();
+                                    }
+                                    dismissOverlayAnimated(true); return true;
                                 }
                                 if (totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
-                                    dismissOverlayAnimated(); return true;
+                                    if (mCurrentKey != null) {
+                                        mUserDismissedKey = mCurrentKey;
+                                        mUserDismissTime = SystemClock.elapsedRealtime();
+                                    }
+                                    dismissOverlayAnimated(false); return true;
                                 }
                                 if (totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
-                                    dismissOverlayAnimated(); return true;
+                                    if (mCurrentKey != null) {
+                                        mUserDismissedKey = mCurrentKey;
+                                        mUserDismissTime = SystemClock.elapsedRealtime();
+                                    }
+                                    dismissOverlayAnimated(false); return true;
                                 }
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar(); removeOverlayImmediate(); return true;
@@ -642,7 +680,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                     startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
                                     return true;
                                 }
-                                if (Math.abs(totalDx) < SWIPE_DESTROY_THRESHOLD && Math.abs(totalDy) < SWIPE_DESTROY_THRESHOLD) {
+                                if (Math.abs(totalDx) < CLICK_THRESHOLD && Math.abs(totalDy) < CLICK_THRESHOLD) {
                                     performContentClick(contentIntent);
                                     dismissOverlayAnimated();
                                     return true;
@@ -694,7 +732,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private Bundle createLaunchOptions() {
         try {
-            Class<?> aoClass = Class.forName("android.app.ActivityOptions");
+            Class<?> aoClass = Class.forName("android.app.ActivityOptions", true, mContext.getClassLoader());
             Object ao = XposedHelpers.callStaticMethod(aoClass, "makeBasic");
             XposedHelpers.callMethod(ao, "setLaunchWindowingMode", 1);
             return (Bundle) XposedHelpers.callMethod(ao, "toBundle");
@@ -727,40 +765,6 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
-    private void hideOverlayOnly() {
-        cancelAllAnimations();
-        if (mAutoDismissRunnable != null) {
-            mHandler.removeCallbacks(mAutoDismissRunnable);
-            mAutoDismissRunnable = null;
-        }
-        if (mCurrentOverlay != null) {
-            mCurrentOverlay.setAlpha(1f);
-            mCurrentOverlay.setTranslationX(0f);
-            mCurrentOverlay.setTranslationY(0f);
-            mCurrentOverlay.setScaleX(1f);
-            mCurrentOverlay.setScaleY(1f);
-        }
-        if (mCurrentRowView != null) {
-            try { XposedHelpers.callMethod(mCurrentRowView, "setHeadsUp", false); }
-            catch (Throwable t1) {
-                try { XposedHelpers.callMethod(mCurrentRowView, "setHeadsUpAnimatingAway", true); }
-                catch (Throwable ignored) {}
-            }
-        }
-        if (mCurrentOverlay != null) {
-            try {
-                if (mCurrentOverlay.getParent() != null) mWindowManager.removeView(mCurrentOverlay);
-            } catch (Throwable t) {
-                try { mWindowManager.removeViewImmediate(mCurrentOverlay); } catch (Throwable ignored) {}
-            }
-        }
-        mCurrentKey = null;
-        mCurrentRowView = null;
-        mCurrentOverlay = null;
-        mCurrentContentHash = null;
-        mLastDismissTime = SystemClock.elapsedRealtime();
-    }
-
     private void removeOverlayImmediate() {
         cancelAllAnimations();
         if (mAutoDismissRunnable != null) {
@@ -782,7 +786,7 @@ public class MainHook implements IXposedHookLoadPackage {
         if (overlayToShield != null) {
             try {
                 overlayToShield.setAlpha(0f);
-                overlayToShield.setOnTouchListener((v, event) -> true);
+                overlayToShield.setOnTouchListener((v, event) -> false);
             } catch (Throwable ignored) {}
             mHandler.postDelayed(() -> {
                 try {
@@ -793,8 +797,6 @@ public class MainHook implements IXposedHookLoadPackage {
             }, SHIELD_DELAY_MS);
         }
         if (keyToRemove != null) mLastDismissTime = SystemClock.elapsedRealtime();
-        mUserDismissedKey = keyToRemove;
-        mUserDismissTime = SystemClock.elapsedRealtime();
         mCurrentKey = null;
         mCurrentRowView = null;
         mCurrentOverlay = null;
