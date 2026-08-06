@@ -94,7 +94,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final long GLOBAL_COOLDOWN_MS = 1000;
     // Shield 机制已删除（v26.8）
 
-    private Object mHeadsUpManager = null;
+    // mHeadsUpManager 已删除（v26.9 新架构不依赖 Heads-Up）
     private Object mStatusBar = null;
 
     private BroadcastReceiver mScreenReceiver = null;
@@ -130,29 +130,15 @@ public class MainHook implements IXposedHookLoadPackage {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
         XposedBridge.log(TAG + ": ====== HULFix Overlay v26 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
-        hookHeadsUpIsVisible(lpparam);
-        hookAnimatingAway(lpparam);
+        hookNotificationEntry(lpparam);
         hookHeadsUpRowTouch(lpparam);
         hookPanelExpansion(lpparam);
-        captureHeadsUpManager(lpparam);
         captureStatusBar(lpparam);
     }
 
-    private void captureHeadsUpManager(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> headsUpClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.policy.HeadsUpManager", lpparam.classLoader);
-            XposedBridge.hookAllMethods(headsUpClass, "addNotification",
-                new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        mHeadsUpManager = param.thisObject;
-                    }
-                });
-            XposedBridge.log(TAG + ": HeadsUpManager capture hooked");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": HeadsUpManager capture failed: " + t);
         }
-    }
 
     private void captureStatusBar(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -232,41 +218,6 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void removeSystemHeadsUpEntry(String key) {
-        if (mHeadsUpManager != null && key != null) {
-            try {
-                XposedHelpers.callMethod(mHeadsUpManager, "removeNotification", key, true);
-            } catch (Throwable t) {
-                try { XposedHelpers.callMethod(mHeadsUpManager, "removeNotification", key); }
-                catch (Throwable ignored) {}
-            }
-        }
-    }
-
-    private void removeSystemNotificationView(String key) {
-        if (mStatusBar != null && key != null) {
-            try {
-                Class<?> nvClass = XposedHelpers.findClass(
-                    "android.service.notification.NotificationVisibility",
-                    mStatusBar.getClass().getClassLoader());
-                Object nv = XposedHelpers.callStaticMethod(nvClass, "obtain", key, 0, 0, false);
-                XposedHelpers.callMethod(mStatusBar, "removeNotification", key, nv);
-            } catch (Throwable t1) {
-                try { XposedHelpers.callMethod(mStatusBar, "removeNotification", key); }
-                catch (Throwable t2) {
-                    try {
-                        Object presenter = XposedHelpers.getObjectField(mStatusBar, "mPresenter");
-                        if (presenter != null) XposedHelpers.callMethod(presenter, "removeNotification", key);
-                    } catch (Throwable t3) {
-                        try {
-                            Object entryManager = XposedHelpers.getObjectField(mStatusBar, "mEntryManager");
-                            if (entryManager != null) XposedHelpers.callMethod(entryManager, "removeNotification", key);
-                        } catch (Throwable t4) {}
-                    }
-                }
-            }
-        }
-    }
 
     private boolean isOngoingNotification(StatusBarNotification sbn) {
         if (sbn == null) return false;
@@ -335,106 +286,126 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {}
     }
 
-    private void hookHeadsUpIsVisible(XC_LoadPackage.LoadPackageParam lpparam) {
+
+    // === 新架构：直接监听通知进入系统，不依赖 Heads-Up 触发 ===
+    private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 路径1: NotificationEntryManager.addNotification (Android 13 常用)
         try {
-            Class<?> rowClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
+            Class<?> nemClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.collection.NotificationEntryManager",
                 lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpIsVisible", new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        if (isGlobalCooldown()) { param.setResult(null); return; }
-                        if (isStatusBarExpanded()) { param.setResult(null); return; }
-                        View rowView = (View) param.thisObject;
-                        if (!isLandscape(rowView)) return;
-                        StatusBarNotification sbn = getSbnFromRow(rowView);
-                        if (sbn == null || BLOCK_PKG.equals(sbn.getPackageName())) return;
-                        String key = sbn.getKey();
-                        long now = SystemClock.elapsedRealtime();
-                        if (key.equals(mUserDismissedKey) && (now - mUserDismissTime) < USER_DISMISS_COOLDOWN_MS) {
-                            param.setResult(null); return;
-                        }
-                        if (key.equals(mCurrentKey) && mCurrentOverlay != null) { param.setResult(null); return; }
-                        if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
-                            param.setResult(null);
-                            removeSystemHeadsUpEntry(key);
-                            removeSystemNotificationView(key);
-                            return;
-                        }
-                        // 过滤规则（v26.8）：
-                        // 1. 保留新鲜度（8秒内）
-                        // 2. 不过滤消息等级（已删除重要性过滤）
-                        // 3. 已显示过的旧通知不再重复弹
-                        // 4. 过滤常驻通知（ONGOING_EVENT / FOREGROUND_SERVICE）
-                        if (!isFreshNotification(sbn)) { param.setResult(null); return; }
-                        if (mShownKeys.contains(key)) { param.setResult(null); return; }
-                        if (isOngoingNotification(sbn)) { param.setResult(null); return; }
-                        param.setResult(null);
-                        if (mContext == null) {
-                            mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
-                            mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
-                        }
-                        mCurrentRowView = rowView;
-                        showCustomHeadsUp(sbn);
-                    } catch (Throwable t) { XposedBridge.log(TAG + ": setHeadsUpIsVisible error: " + t); }
+            XposedBridge.hookAllMethods(nemClass, "addNotification", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    handleNewNotification(lpparam, param);
                 }
             });
-        } catch (Throwable t) { XposedBridge.log(TAG + ": setHeadsUpIsVisible hook failed: " + t); }
-    }
+            XposedBridge.log(TAG + ": NotificationEntryManager.addNotification hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationEntryManager.addNotification skipped: " + t); }
 
-    private void hookAnimatingAway(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 路径2: 备用类名
         try {
-            Class<?> rowClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
+            Class<?> nemClass2 = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.NotificationEntryManager",
                 lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpAnimatingAway", boolean.class, new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        if (isGlobalCooldown()) { param.setResult(null); return; }
-                        if (isStatusBarExpanded()) { param.setResult(null); return; }
-                        boolean animatingAway = (boolean) param.args[0];
-                        View rowView = (View) param.thisObject;
-                        if (mCurrentKey == null && mCurrentRowView == rowView) return;
-                        if (animatingAway) return;
-                        boolean isHeadsUp = false;
-                        try { isHeadsUp = (boolean) XposedHelpers.callMethod(rowView, "isHeadsUp"); }
-                        catch (Throwable ignored) {}
-                        if (!isHeadsUp || !isLandscape(rowView)) return;
-                        StatusBarNotification sbn = getSbnFromRow(rowView);
-                        if (sbn == null || BLOCK_PKG.equals(sbn.getPackageName())) return;
-                        String key = sbn.getKey();
-                        long now = SystemClock.elapsedRealtime();
-                        if (key.equals(mUserDismissedKey) && (now - mUserDismissTime) < USER_DISMISS_COOLDOWN_MS) {
-                            param.setResult(null); return;
-                        }
-                        if (key.equals(mCurrentKey) && mCurrentOverlay != null) { param.setResult(null); return; }
-                        if (key.equals(mCurrentKey) && (now - mLastDismissTime) < COOLDOWN_MS) {
-                            param.setResult(null);
-                            removeSystemHeadsUpEntry(key);
-                            removeSystemNotificationView(key);
-                            return;
-                        }
-                        // 过滤规则（v26.8）：
-                        // 1. 保留新鲜度（8秒内）
-                        // 2. 不过滤消息等级（已删除重要性过滤）
-                        // 3. 已显示过的旧通知不再重复弹
-                        // 4. 过滤常驻通知（ONGOING_EVENT / FOREGROUND_SERVICE）
-                        if (!isFreshNotification(sbn)) { param.setResult(null); return; }
-                        if (mShownKeys.contains(key)) { param.setResult(null); return; }
-                        if (isOngoingNotification(sbn)) { param.setResult(null); return; }
-                        param.setResult(null);
-                        if (mContext == null) {
-                            mContext = (Context) XposedHelpers.callMethod(rowView, "getContext");
-                            mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
-                        }
-                        mCurrentRowView = rowView;
-                        showCustomHeadsUp(sbn);
-                    } catch (Throwable t) { XposedBridge.log(TAG + ": setHeadsUpAnimatingAway error: " + t); }
+            XposedBridge.hookAllMethods(nemClass2, "addNotification", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    handleNewNotification(lpparam, param);
                 }
             });
-        } catch (Throwable t) { XposedBridge.log(TAG + ": setHeadsUpAnimatingAway hook failed: " + t); }
+            XposedBridge.log(TAG + ": NotificationEntryManager(alt).addNotification hooked");
+        } catch (Throwable t) {}
+
+        // 路径3: StatusBar.addNotification
+        try {
+            Class<?> sbClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
+            XposedBridge.hookAllMethods(sbClass, "addNotification", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    handleNewNotification(lpparam, param);
+                }
+            });
+            XposedBridge.log(TAG + ": StatusBar.addNotification hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook StatusBar.addNotification skipped: " + t); }
+
+        // 路径4: CommonNotifCollection.addEntry
+        try {
+            Class<?> cncClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.collection.notifcollection.CommonNotifCollection",
+                lpparam.classLoader);
+            XposedBridge.hookAllMethods(cncClass, "addEntry", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    handleNewNotification(lpparam, param);
+                }
+            });
+            XposedBridge.log(TAG + ": CommonNotifCollection.addEntry hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook CommonNotifCollection.addEntry skipped: " + t); }
     }
 
+    private void handleNewNotification(XC_LoadPackage.LoadPackageParam lpparam, XC_MethodHook.MethodHookParam param) {
+        try {
+            if (mContext == null) {
+                mContext = (Context) XposedHelpers.callMethod(
+                    XposedHelpers.findClass("com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader),
+                    "getContext");
+                if (mContext == null) return;
+                mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
+            }
+            if (!isLandscape(null)) return;
+            if (isStatusBarExpanded()) return;
+            if (isGlobalCooldown()) return;
+
+            StatusBarNotification sbn = extractSbnFromParam(param);
+            if (sbn == null) return;
+            if (BLOCK_PKG.equals(sbn.getPackageName())) return;
+            String key = sbn.getKey();
+
+            // 过滤规则
+            if (!isFreshNotification(sbn)) return;
+            if (mShownKeys.contains(key)) return;
+            if (isOngoingNotification(sbn)) return;
+
+            // 检查是否已有相同内容的通知正在显示
+            String contentHash = buildContentHash(sbn);
+            if (contentHash.equals(mCurrentContentHash)) return;
+
+            // 横屏 + 新通知 → 直接弹自定义悬浮窗
+            mCurrentRowView = null;
+            showCustomHeadsUp(sbn);
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": handleNewNotification error: " + t);
+        }
+    }
+
+    private StatusBarNotification extractSbnFromParam(XC_MethodHook.MethodHookParam param) {
+        try {
+            for (Object arg : param.args) {
+                if (arg instanceof StatusBarNotification) return (StatusBarNotification) arg;
+            }
+            Object result = param.getResult();
+            if (result instanceof StatusBarNotification) return (StatusBarNotification) result;
+            Object entry = param.args[0];
+            if (entry != null) {
+                try {
+                    Object notif = XposedHelpers.callMethod(entry, "getSbn");
+                    if (notif instanceof StatusBarNotification) return (StatusBarNotification) notif;
+                } catch (Throwable ignored) {}
+                try {
+                    Object notif2 = XposedHelpers.getObjectField(entry, "mSbn");
+                    if (notif2 instanceof StatusBarNotification) return (StatusBarNotification) notif2;
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable t) {}
+        return null;
+    }
+
+    private String buildContentHash(StatusBarNotification sbn) {
+        try {
+            android.app.Notification n = sbn.getNotification();
+            String title = n.extras.getString(android.app.Notification.EXTRA_TITLE, "");
+            String text = n.extras.getCharSequence(android.app.Notification.EXTRA_TEXT, "").toString();
+            return sbn.getPackageName() + "|" + title + "|" + text;
+        } catch (Throwable t) { return sbn.getKey(); }
+    }
     private void hookHeadsUpRowTouch(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> rowClass = XposedHelpers.findClass(
@@ -1345,8 +1316,7 @@ public class MainHook implements IXposedHookLoadPackage {
         String keyToRemove = mCurrentKey;
         View rowViewSnapshot = mCurrentRowView;
         final View overlayToShield = mCurrentOverlay;
-        removeSystemHeadsUpEntry(keyToRemove);
-        removeSystemNotificationView(keyToRemove);
+        // 系统 Heads-Up 已关闭，无需清理系统通知
          if (rowViewSnapshot != null) {
             try { XposedHelpers.callMethod(rowViewSnapshot, "setHeadsUp", false); }
             catch (Throwable t1) {
@@ -1639,7 +1609,7 @@ public class MainHook implements IXposedHookLoadPackage {
             super.onDetachedFromWindow();
             stopAnimations();
             if (mNoiseBitmap != null && !mNoiseBitmap.isRecycled()) mNoiseBitmap.recycle();
-        }
+
     }
 
 }
