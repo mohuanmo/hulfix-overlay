@@ -289,6 +289,20 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // === 新架构：直接监听通知进入系统，不依赖 Heads-Up 触发 ===
     private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 路径0: NotificationListener.onNotificationPosted (最上游、最可靠)
+        try {
+            Class<?> listenerClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.NotificationListener",
+                lpparam.classLoader);
+            XposedBridge.hookAllMethods(listenerClass, "onNotificationPosted", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted triggered");
+                    handleNewNotification(lpparam, param);
+                }
+            });
+            XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationListener.onNotificationPosted skipped: " + t); }
+
         // 路径1: NotificationEntryManager.addNotification (Android 13 常用)
         try {
             Class<?> nemClass = XposedHelpers.findClass(
@@ -296,6 +310,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 lpparam.classLoader);
             XposedBridge.hookAllMethods(nemClass, "addNotification", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + ": NotificationEntryManager.addNotification triggered");
                     handleNewNotification(lpparam, param);
                 }
             });
@@ -309,6 +324,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 lpparam.classLoader);
             XposedBridge.hookAllMethods(nemClass2, "addNotification", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + ": NotificationEntryManager(alt).addNotification triggered");
                     handleNewNotification(lpparam, param);
                 }
             });
@@ -321,6 +337,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 "com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
             XposedBridge.hookAllMethods(sbClass, "addNotification", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + ": StatusBar.addNotification triggered");
                     handleNewNotification(lpparam, param);
                 }
             });
@@ -334,6 +351,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 lpparam.classLoader);
             XposedBridge.hookAllMethods(cncClass, "addEntry", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
+                    XposedBridge.log(TAG + ": CommonNotifCollection.addEntry triggered");
                     handleNewNotification(lpparam, param);
                 }
             });
@@ -343,31 +361,75 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void handleNewNotification(XC_LoadPackage.LoadPackageParam lpparam, XC_MethodHook.MethodHookParam param) {
         try {
+            XposedBridge.log(TAG + ">>> handleNewNotification called");
+
             if (mContext == null) {
+                XposedBridge.log(TAG + ">>> mContext is null, trying to get from StatusBar");
                 mContext = (Context) XposedHelpers.callMethod(
                     XposedHelpers.findClass("com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader),
                     "getContext");
-                if (mContext == null) return;
+                if (mContext == null) {
+                    XposedBridge.log(TAG + ">>> FAILED: StatusBar.getContext() returned null");
+                    return;
+                }
                 mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
+                XposedBridge.log(TAG + ">>> mContext initialized successfully");
             }
-            if (!isLandscape()) return;
-            if (isStatusBarExpanded()) return;
-            if (isGlobalCooldown()) return;
+
+            if (!isLandscape()) {
+                XposedBridge.log(TAG + ">>> Filtered: not landscape");
+                return;
+            }
+            if (isStatusBarExpanded()) {
+                XposedBridge.log(TAG + ">>> Filtered: status bar expanded");
+                return;
+            }
+            if (isGlobalCooldown()) {
+                XposedBridge.log(TAG + ">>> Filtered: global cooldown");
+                return;
+            }
 
             StatusBarNotification sbn = extractSbnFromParam(param);
-            if (sbn == null) return;
-            if (BLOCK_PKG.equals(sbn.getPackageName())) return;
+            if (sbn == null) {
+                XposedBridge.log(TAG + ">>> Filtered: sbn is NULL, extract failed!");
+                return;
+            }
+
+            String pkg = sbn.getPackageName();
             String key = sbn.getKey();
+            String title = "";
+            try {
+                title = sbn.getNotification().extras.getString(android.app.Notification.EXTRA_TITLE, "");
+            } catch (Throwable e) {}
+            XposedBridge.log(TAG + ">>> sbn extracted: pkg=" + pkg + " key=" + key + " title=" + title);
+
+            if (BLOCK_PKG.equals(pkg)) {
+                XposedBridge.log(TAG + ">>> Filtered: blocked package " + pkg);
+                return;
+            }
 
             // 过滤规则
-            if (!isFreshNotification(sbn)) return;
-            if (mShownKeys.contains(key)) return;
-            if (isOngoingNotification(sbn)) return;
+            if (!isFreshNotification(sbn)) {
+                XposedBridge.log(TAG + ">>> Filtered: not fresh (too old)");
+                return;
+            }
+            if (mShownKeys.contains(key)) {
+                XposedBridge.log(TAG + ">>> Filtered: already shown key=" + key);
+                return;
+            }
+            if (isOngoingNotification(sbn)) {
+                XposedBridge.log(TAG + ">>> Filtered: ongoing notification");
+                return;
+            }
 
             // 检查是否已有相同内容的通知正在显示
             String contentHash = buildContentHash(sbn);
-            if (contentHash.equals(mCurrentContentHash)) return;
+            if (contentHash.equals(mCurrentContentHash)) {
+                XposedBridge.log(TAG + ">>> Filtered: same content hash");
+                return;
+            }
 
+            XposedBridge.log(TAG + ">>> PASSED all filters, showing heads-up for " + pkg);
             // 横屏 + 新通知 → 直接弹自定义悬浮窗
             mCurrentRowView = null;
             showCustomHeadsUp(sbn);
@@ -375,29 +437,95 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": handleNewNotification error: " + t);
         }
     }
-
     private StatusBarNotification extractSbnFromParam(XC_MethodHook.MethodHookParam param) {
         try {
-            for (Object arg : param.args) {
-                if (arg instanceof StatusBarNotification) return (StatusBarNotification) arg;
+            XposedBridge.log(TAG + ": extractSbnFromParam called, args.length=" + (param.args != null ? param.args.length : 0));
+
+            // 策略1: 直接遍历 args 找 StatusBarNotification
+            if (param.args != null) {
+                for (int i = 0; i < param.args.length; i++) {
+                    Object arg = param.args[i];
+                    XposedBridge.log(TAG + ": arg[" + i + "] type=" + (arg != null ? arg.getClass().getName() : "null"));
+                    if (arg instanceof StatusBarNotification) {
+                        XposedBridge.log(TAG + ": Found sbn in args[" + i + "]");
+                        return (StatusBarNotification) arg;
+                    }
+                }
             }
-            Object result = param.result;
-            if (result instanceof StatusBarNotification) return (StatusBarNotification) result;
-            Object entry = param.args[0];
-            if (entry != null) {
+
+            // 策略2: 检查 param.result
+            if (param.result != null) {
+                XposedBridge.log(TAG + ": result type=" + param.result.getClass().getName());
+                if (param.result instanceof StatusBarNotification) {
+                    XposedBridge.log(TAG + ": Found sbn in param.result");
+                    return (StatusBarNotification) param.result;
+                }
+            }
+
+            // 策略3: args[0] 可能是 NotificationEntry，尝试反射获取 sbn
+            if (param.args != null && param.args.length > 0 && param.args[0] != null) {
+                Object entry = param.args[0];
+                String entryClass = entry.getClass().getName();
+                XposedBridge.log(TAG + ": Trying to extract sbn from entry class=" + entryClass);
+
+                // 3a: 尝试 getSbn() 方法
                 try {
                     Object notif = XposedHelpers.callMethod(entry, "getSbn");
-                    if (notif instanceof StatusBarNotification) return (StatusBarNotification) notif;
-                } catch (Throwable ignored) {}
+                    if (notif instanceof StatusBarNotification) {
+                        XposedBridge.log(TAG + ": Found sbn via entry.getSbn()");
+                        return (StatusBarNotification) notif;
+                    }
+                } catch (Throwable e) { XposedBridge.log(TAG + ": getSbn() failed: " + e); }
+
+                // 3b: 尝试 mSbn 字段
                 try {
                     Object notif2 = XposedHelpers.getObjectField(entry, "mSbn");
-                    if (notif2 instanceof StatusBarNotification) return (StatusBarNotification) notif2;
-                } catch (Throwable ignored) {}
+                    if (notif2 instanceof StatusBarNotification) {
+                        XposedBridge.log(TAG + ": Found sbn via entry.mSbn");
+                        return (StatusBarNotification) notif2;
+                    }
+                } catch (Throwable e) { XposedBridge.log(TAG + ": mSbn field failed: " + e); }
+
+                // 3c: 尝试 sbn 字段 (LineageOS 可能用不同命名)
+                try {
+                    Object notif3 = XposedHelpers.getObjectField(entry, "sbn");
+                    if (notif3 instanceof StatusBarNotification) {
+                        XposedBridge.log(TAG + ": Found sbn via entry.sbn");
+                        return (StatusBarNotification) notif3;
+                    }
+                } catch (Throwable e) { XposedBridge.log(TAG + ": sbn field failed: " + e); }
+
+                // 3d: 尝试 notification 字段
+                try {
+                    Object notif4 = XposedHelpers.getObjectField(entry, "notification");
+                    if (notif4 instanceof StatusBarNotification) {
+                        XposedBridge.log(TAG + ": Found sbn via entry.notification");
+                        return (StatusBarNotification) notif4;
+                    }
+                } catch (Throwable e) { XposedBridge.log(TAG + ": notification field failed: " + e); }
+
+                // 3e: 遍历 entry 的所有方法，找返回 StatusBarNotification 的
+                try {
+                    java.lang.reflect.Method[] methods = entry.getClass().getDeclaredMethods();
+                    for (java.lang.reflect.Method m : methods) {
+                        if (m.getReturnType() == StatusBarNotification.class) {
+                            m.setAccessible(true);
+                            Object notif5 = m.invoke(entry);
+                            if (notif5 instanceof StatusBarNotification) {
+                                XposedBridge.log(TAG + ": Found sbn via reflected method " + m.getName());
+                                return (StatusBarNotification) notif5;
+                            }
+                        }
+                    }
+                } catch (Throwable e) { XposedBridge.log(TAG + ": reflect methods failed: " + e); }
             }
-        } catch (Throwable t) {}
+
+            XposedBridge.log(TAG + ": FAILED to extract sbn from param");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": extractSbnFromParam exception: " + t);
+        }
         return null;
     }
-
     private String buildContentHash(StatusBarNotification sbn) {
         try {
             android.app.Notification n = sbn.getNotification();
