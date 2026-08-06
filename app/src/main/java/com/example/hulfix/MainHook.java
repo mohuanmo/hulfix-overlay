@@ -381,7 +381,7 @@ public class MainHook implements IXposedHookLoadPackage {
             for (Object arg : param.args) {
                 if (arg instanceof StatusBarNotification) return (StatusBarNotification) arg;
             }
-            Object result = param.getResult();
+            Object result = param.result;
             if (result instanceof StatusBarNotification) return (StatusBarNotification) result;
             Object entry = param.args[0];
             if (entry != null) {
