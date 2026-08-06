@@ -150,6 +150,58 @@ public class MainHook implements IXposedHookLoadPackage {
             Class<?> entryManagerClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.notification.NotificationEntryManager", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(entryManagerClass, "addNotification",
+                StatusBarNotification.class, XposedHelpers.findClass("android.service.notification.NotificationListenerService\$RankingMap", lpparam.classLoader),
+                new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        StatusBarNotification sbn = (StatusBarNotification) param.args[0];
+                        if (sbn == null) return;
+                        processNotification(sbn);
+                    }
+                });
+            XposedBridge.log(TAG + ": NotificationEntryManager.addNotification hooked");
+        } catch (Throwable t1) {
+            try {
+                Class<?> statusBarClass = XposedHelpers.findClass(
+                    "com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
+                XposedHelpers.findAndHookMethod(statusBarClass, "addNotification",
+                    String.class, StatusBarNotification.class,
+                    new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam param) {
+                            StatusBarNotification sbn = (StatusBarNotification) param.args[1];
+                            if (sbn == null) return;
+                            processNotification(sbn);
+                        }
+                    });
+                XposedBridge.log(TAG + ": StatusBar.addNotification hooked (fallback)");
+            } catch (Throwable t2) {
+                XposedBridge.log(TAG + ": hookNotificationEntry failed: " + t2);
+            }
+        }
+    }
+
+    private void processNotification(StatusBarNotification sbn) {
+        if (sbn == null) return;
+        final String key = sbn.getKey();
+        final Notification notification = sbn.getNotification();
+
+        if (BLOCK_PKG.equals(sbn.getPackageName())) return;
+        if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
+        if ((notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) return;
+        if (!isFreshNotification(sbn)) return;
+        if (mUserDismissedKey != null && key.equals(mUserDismissedKey)
+            && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS) return;
+        if (isGlobalCooldown()) return;
+        if (isStatusBarExpanded()) return;
+        if (isKeyguardLocked()) return;
+
+        showCustomHeadsUp(sbn);
+    }
+
+    private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> entryManagerClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.NotificationEntryManager", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(entryManagerClass, "addNotification",
                 StatusBarNotification.class, XposedHelpers.findClass("android.service.notification.NotificationListenerService.RankingMap", lpparam.classLoader),
                 new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
@@ -195,7 +247,7 @@ public class MainHook implements IXposedHookLoadPackage {
         if (!isFreshNotification(sbn)) return;
 
         // 检查是否被用户手动忽略
-        if (key.equals(mUserDismissedKey)
+        if (mUserDismissedKey != null && key.equals(mUserDismissedKey)
             && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS) return;
 
         // 检查全局冷却
@@ -495,22 +547,9 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
 
-    private StatusBarNotification getSbnFromRow(View rowView) {
-        try {
-            Object entry = XposedHelpers.getObjectField(rowView, "mEntry");
-            if (entry == null) entry = XposedHelpers.getObjectField(rowView, "mSbn");
-            if (entry instanceof StatusBarNotification) return (StatusBarNotification) entry;
-            if (entry != null) {
-                Object sbn = XposedHelpers.getObjectField(entry, "mSbn");
-                if (sbn instanceof StatusBarNotification) return (StatusBarNotification) sbn;
-            }
-        } catch (Throwable t) {}
-        return null;
-    }
 
-    private boolean isLandscape(View view) {
-        return view.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
-    }
+
+
 
     private void cancelAllAnimations() {
         ValueAnimator enter = mEnterAnim;
