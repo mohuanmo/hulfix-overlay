@@ -149,7 +149,7 @@ public class MainHook implements IXposedHookLoadPackage {
             Class<?> entryManagerClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.notification.NotificationEntryManager", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(entryManagerClass, "addNotification",
-                StatusBarNotification.class, XposedHelpers.findClass("android.service.notification.NotificationListenerService\$RankingMap", lpparam.classLoader),
+                StatusBarNotification.class, XposedHelpers.findClass("android.service.notification.NotificationListenerService$RankingMap", lpparam.classLoader),
                 new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         StatusBarNotification sbn = (StatusBarNotification) param.args[0];
