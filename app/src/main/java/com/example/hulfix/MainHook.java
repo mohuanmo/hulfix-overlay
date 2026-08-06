@@ -92,6 +92,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private long mGlobalCooldownTime = 0;
     private static final long GLOBAL_COOLDOWN_MS = 1000;
+    private boolean mShieldActive = false;
 
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -127,6 +128,9 @@ public class MainHook implements IXposedHookLoadPackage {
         hookHeadsUpIsVisible(lpparam);
         hookAnimatingAway(lpparam);
         hookHeadsUpRowTouch(lpparam);
+        hookNotificationStackTouch(lpparam);
+        hookStatusBarWindowTouch(lpparam);
+        hookHeadsUpManagerTouch(lpparam);
         hookPanelExpansion(lpparam);
         captureHeadsUpManager(lpparam);
         captureStatusBar(lpparam);
@@ -301,6 +305,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void triggerGlobalCooldown() {
         mGlobalCooldownTime = SystemClock.elapsedRealtime();
+        mShieldActive = true;
         if (mCurrentOverlay != null) removeOverlayImmediate();
     }
 
@@ -410,24 +415,176 @@ public class MainHook implements IXposedHookLoadPackage {
             Class<?> rowClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.notification.row.ExpandableNotificationRow",
                 lpparam.classLoader);
+
+            // 拦截1: onTouchEvent（直接触摸事件）
             XposedHelpers.findAndHookMethod(rowClass, "onTouchEvent", MotionEvent.class, new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (mCurrentKey == null) return;
+                    if (!mShieldActive && mCurrentKey == null) return;
                     try {
                         View rowView = (View) param.thisObject;
                         StatusBarNotification sbn = getSbnFromRow(rowView);
-                        if (sbn != null && mCurrentKey.equals(sbn.getKey())) {
-                            param.setResult(true);
+                        if (sbn != null) {
+                            if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
+                                param.setResult(true); return;
+                            }
+                            if (mShieldActive) {
+                                param.setResult(true); return;
+                            }
                         }
                     } catch (Throwable t) {}
                 }
             });
-            XposedBridge.log(TAG + ": HeadsUpRow touch hook installed");
+
+            // 拦截2: dispatchTouchEvent（事件分发入口，优先级更高）
+            XposedHelpers.findAndHookMethod(rowClass, "dispatchTouchEvent", MotionEvent.class, new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (!mShieldActive && mCurrentKey == null) return;
+                    try {
+                        View rowView = (View) param.thisObject;
+                        StatusBarNotification sbn = getSbnFromRow(rowView);
+                        if (sbn != null) {
+                            if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
+                                param.setResult(true); return;
+                            }
+                            if (mShieldActive) {
+                                param.setResult(true); return;
+                            }
+                        }
+                    } catch (Throwable t) {}
+                }
+            });
+
+            // 拦截3: onInterceptTouchEvent（如果 ExpandableNotificationRow 是 ViewGroup）
+            try {
+                XposedHelpers.findAndHookMethod(rowClass, "onInterceptTouchEvent", MotionEvent.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!mShieldActive && mCurrentKey == null) return;
+                        try {
+                            View rowView = (View) param.thisObject;
+                            StatusBarNotification sbn = getSbnFromRow(rowView);
+                            if (sbn != null) {
+                                if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
+                                    param.setResult(true); return;
+                                }
+                                if (mShieldActive) {
+                                    param.setResult(true); return;
+                                }
+                            }
+                        } catch (Throwable t) {}
+                    }
+                });
+            } catch (Throwable ignored) {}
+
+            XposedBridge.log(TAG + ": HeadsUpRow 3-layer touch hook installed");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": hookHeadsUpRowTouch failed: " + t);
         }
     }
 
+
+
+    private void hookStatusBarWindowTouch(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 兜底拦截：StatusBarWindowView 级别的触摸（最上层窗口）
+        try {
+            Class<?> sbwvClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.StatusBarWindowView",
+                lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(sbwvClass, "dispatchTouchEvent",
+                MotionEvent.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!mShieldActive) return;
+                        try {
+                            MotionEvent ev = (MotionEvent) param.args[0];
+                            // 只拦截屏幕顶部区域（Heads-Up 通知通常在此）
+                            if (ev.getY() < 250f) {
+                                // 检查是否点击在系统通知行上（通过查找子 View）
+                                ViewGroup window = (ViewGroup) param.thisObject;
+                                boolean hitNotificationRow = false;
+                                for (int i = 0; i < window.getChildCount(); i++) {
+                                    View child = window.getChildAt(i);
+                                    if (child != null && child.getClass().getName().contains("Notification")) {
+                                        int[] loc = new int[2];
+                                        child.getLocationOnScreen(loc);
+                                        if (ev.getRawX() >= loc[0] && ev.getRawX() <= loc[0] + child.getWidth()
+                                            && ev.getRawY() >= loc[1] && ev.getRawY() <= loc[1] + child.getHeight()) {
+                                            hitNotificationRow = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (hitNotificationRow) {
+                                    param.setResult(true);
+                                }
+                            }
+                        } catch (Throwable t) {}
+                    }
+                });
+            XposedBridge.log(TAG + ": StatusBarWindowView dispatchTouchEvent hooked");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook StatusBarWindowView skipped: " + t); }
+    }
+
+    
+    private void hookHeadsUpManagerTouch(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 兜底拦截：HeadsUpManager 级别的通知操作
+        try {
+            Class<?> humClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.policy.HeadsUpManager",
+                lpparam.classLoader);
+
+            // 拦截点击通知后的操作（防止系统触发 PendingIntent）
+            XposedBridge.hookAllMethods(humClass, "onHeadsUpViewClicked", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (mShieldActive) {
+                        param.setResult(null);
+                        XposedBridge.log(TAG + ": HeadsUp click blocked by shield");
+                    }
+                }
+            });
+
+            // 拦截通知行的滑动操作
+            XposedBridge.hookAllMethods(humClass, "onHeadsUpViewSwipedUp", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (mShieldActive) {
+                        param.setResult(null);
+                        XposedBridge.log(TAG + ": HeadsUp swipe blocked by shield");
+                    }
+                }
+            });
+
+            XposedBridge.log(TAG + ": HeadsUpManager operation hooks installed");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook HeadsUpManager ops skipped: " + t); }
+
+        // 拦截 NotificationClicker / NotificationActivityStarter
+        try {
+            Class<?> clickerClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.NotificationClicker",
+                lpparam.classLoader);
+            XposedBridge.hookAllMethods(clickerClass, "onClick", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (mShieldActive) {
+                        param.setResult(null);
+                        XposedBridge.log(TAG + ": NotificationClicker blocked by shield");
+                    }
+                }
+            });
+            XposedBridge.log(TAG + ": NotificationClicker hook installed");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationClicker skipped: " + t); }
+
+        try {
+            Class<?> nasClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.NotificationActivityStarter",
+                lpparam.classLoader);
+            XposedBridge.hookAllMethods(nasClass, "startNotificationIntent", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (mShieldActive) {
+                        param.setResult(null);
+                        XposedBridge.log(TAG + ": NotificationActivityStarter blocked by shield");
+                    }
+                }
+            });
+            XposedBridge.log(TAG + ": NotificationActivityStarter hook installed");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationActivityStarter skipped: " + t); }
+    }
 
     private void hookPanelExpansion(XC_LoadPackage.LoadPackageParam lpparam) {
         // 路径1: NotificationPanelViewController.onPanelExpansionChanged (Android 13 最常用)
@@ -575,6 +732,52 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
             XposedBridge.log(TAG + ": StatusBarWindowView.onTouchEvent hooked");
         } catch (Throwable t) { XposedBridge.log(TAG + ": hook StatusBarWindowView.onTouchEvent skipped: " + t); }
+    }
+
+
+    private void hookNotificationStackTouch(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 兜底拦截：NotificationStackScrollLayout 级别的触摸
+        try {
+            Class<?> stackClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout",
+                lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(stackClass, "onInterceptTouchEvent",
+                MotionEvent.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!mShieldActive) return;
+                        try {
+                            MotionEvent ev = (MotionEvent) param.args[0];
+                            if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+                                // 检查触摸位置是否在 Heads-Up 区域（屏幕顶部）
+                                if (ev.getY() < 250f) {
+                                    param.setResult(true);
+                                }
+                            }
+                        } catch (Throwable t) {}
+                    }
+                });
+            XposedBridge.log(TAG + ": NotificationStackScrollLayout touch hook installed");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationStackScrollLayout skipped: " + t); }
+
+        // 备用类名（不同 Android 版本）
+        try {
+            Class<?> stackClass2 = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.stack.NotificationStackScrollLayout",
+                lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(stackClass2, "onInterceptTouchEvent",
+                MotionEvent.class, new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        if (!mShieldActive) return;
+                        try {
+                            MotionEvent ev = (MotionEvent) param.args[0];
+                            if (ev.getAction() == MotionEvent.ACTION_DOWN && ev.getY() < 250f) {
+                                param.setResult(true);
+                            }
+                        } catch (Throwable t) {}
+                    }
+                });
+            XposedBridge.log(TAG + ": NotificationStackScrollLayout(alt) touch hook installed");
+        } catch (Throwable t) {}
     }
 
     private StatusBarNotification getSbnFromRow(View rowView) {
@@ -951,6 +1154,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 params.y = WIN_Y;
 
                 mWindowManager.addView(root, params);
+                mShieldActive = true;
                 mCurrentKey = key;
                 mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
@@ -1196,6 +1400,7 @@ public class MainHook implements IXposedHookLoadPackage {
         mCurrentRowView = null;
         mCurrentOverlay = null;
         mCurrentContentHash = null;
+        mShieldActive = false;
     }
 
     private class LiquidGlassView extends View {
@@ -1383,6 +1588,20 @@ public class MainHook implements IXposedHookLoadPackage {
 
         @Override
         protected void onDraw(Canvas canvas) {
+            // 外部阴影（在 clip 之前绘制，超出玻璃区域）
+            Paint outerShadow = new Paint(Paint.ANTI_ALIAS_FLAG);
+            outerShadow.setColor(mIsDark ? 0x50000000 : 0x30FFFFFF);
+            outerShadow.setMaskFilter(new android.graphics.BlurMaskFilter(18f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+            RectF shadowRect = new RectF(-6, 4, mViewWidth + 6, mViewHeight + 14);
+            canvas.drawRoundRect(shadowRect, mCornerRadius, mCornerRadius, outerShadow);
+
+            // 第二层外发光（焦散感）
+            Paint outerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+            outerGlow.setColor(mIsDark ? 0x18AADDFF : 0x10FFCC88);
+            outerGlow.setMaskFilter(new android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+            RectF glowRect = new RectF(-3, 2, mViewWidth + 3, mViewHeight + 8);
+            canvas.drawRoundRect(glowRect, mCornerRadius, mCornerRadius, outerGlow);
+
             mClipPath.reset();
             mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
             canvas.clipPath(mClipPath);
