@@ -8,8 +8,16 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Configuration;
+import android.animation.AnimatorSet;
+import android.animation.DecelerateInterpolator;
+import android.animation.ObjectAnimator;
+import android.animation.OvershootInterpolator;
+import android.animation.ValueAnimator;
 import android.graphics.PixelFormat;
+import android.graphics.RenderEffect;
+import android.graphics.Shader;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -80,10 +88,13 @@ public class MainHook implements IXposedHookLoadPackage {
     private BroadcastReceiver mScreenReceiver = null;
     private boolean mBroadcastRegistered = false;
 
-    /* ===== 手动动画 Runnable ===== */
-    private Runnable mEnterAnimRunnable = null;
-    private Runnable mExitAnimRunnable = null;
-    private Runnable mBounceAnimRunnable = null;
+    /* ===== ValueAnimator 实例 ===== */
+    private ValueAnimator mEnterAnim = null;
+    private ValueAnimator mExitAnim = null;
+    private ValueAnimator mBounceAnim = null;
+
+    /* ===== 液态玻璃模糊半径（用于拖拽联动） ===== */
+    private float mCurrentBlurRadius = 0f;
 
     /* ===== 手势追踪（防误判） ===== */
     private float mTouchMaxDx = 0f;
@@ -620,17 +631,17 @@ public class MainHook implements IXposedHookLoadPackage {
     /*  取消所有手动动画                                                */
     /* ================================================================ */
     private void cancelAllAnimations() {
-        if (mEnterAnimRunnable != null) {
-            mHandler.removeCallbacks(mEnterAnimRunnable);
-            mEnterAnimRunnable = null;
+        if (mEnterAnim != null) {
+            mEnterAnim.cancel();
+            mEnterAnim = null;
         }
-        if (mExitAnimRunnable != null) {
-            mHandler.removeCallbacks(mExitAnimRunnable);
-            mExitAnimRunnable = null;
+        if (mExitAnim != null) {
+            mExitAnim.cancel();
+            mExitAnim = null;
         }
-        if (mBounceAnimRunnable != null) {
-            mHandler.removeCallbacks(mBounceAnimRunnable);
-            mBounceAnimRunnable = null;
+        if (mBounceAnim != null) {
+            mBounceAnim.cancel();
+            mBounceAnim = null;
         }
     }
 
@@ -645,30 +656,37 @@ public class MainHook implements IXposedHookLoadPackage {
             view.setTranslationX(0f);
             view.setScaleX(0.96f);
             view.setScaleY(0.96f);
+            mCurrentBlurRadius = 12f;
 
-            mEnterAnimRunnable = new Runnable() {
-                int step = 0;
-                final int totalSteps = 10;
-                final long stepMs = 16;
+            // 液态玻璃：入场时从雾化到清晰
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                view.setRenderEffect(RenderEffect.createBlurEffect(
+                    mCurrentBlurRadius, mCurrentBlurRadius, Shader.TileMode.CLAMP));
+            }
 
-                @Override
-                public void run() {
-                    if (mEnterAnimRunnable != this) return;
-                    step++;
-                    float f = step / (float) totalSteps;
-                    float ease = 1f - (1f - f) * (1f - f);
-                    view.setAlpha(ease);
-                    view.setTranslationY(-40f * (1f - ease));
-                    view.setScaleX(0.96f + 0.04f * ease);
-                    view.setScaleY(0.96f + 0.04f * ease);
-                    if (step < totalSteps) {
-                        mHandler.postDelayed(this, stepMs);
+            mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
+            mEnterAnim.setDuration(160);
+            mEnterAnim.setInterpolator(new DecelerateInterpolator(1.0f));
+            mEnterAnim.addUpdateListener(anim -> {
+                float ease = (float) anim.getAnimatedValue();
+                view.setAlpha(ease);
+                view.setTranslationY(-40f * (1f - ease));
+                view.setScaleX(0.96f + 0.04f * ease);
+                view.setScaleY(0.96f + 0.04f * ease);
+
+                // 液态玻璃：动态去模糊
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    float blur = (1f - ease) * 12f;
+                    mCurrentBlurRadius = blur;
+                    if (blur > 0.5f) {
+                        view.setRenderEffect(RenderEffect.createBlurEffect(
+                            blur, blur, Shader.TileMode.CLAMP));
                     } else {
-                        mEnterAnimRunnable = null;
+                        view.setRenderEffect(null);
                     }
                 }
-            };
-            mHandler.post(mEnterAnimRunnable);
+            });
+            mEnterAnim.start();
         });
     }
 
@@ -677,32 +695,42 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ================================================================ */
     private void startExitAnimation(final View view, final Runnable onEnd, final boolean slideUpward) {
         cancelAllAnimations();
-        mExitAnimRunnable = new Runnable() {
-            int step = 0;
-            final int totalSteps = 8;
-            final long stepMs = 16;
 
-            @Override
-            public void run() {
-                if (mExitAnimRunnable != this) return;
-                step++;
-                float f = step / (float) totalSteps;
-                float ease = f * f;
-                view.setAlpha(1f - ease);
-                if (slideUpward) {
-                    view.setTranslationY(-80f * ease);
-                } else {
-                    view.setTranslationX(-80f * ease);
-                }
-                if (step < totalSteps) {
-                    mHandler.postDelayed(this, stepMs);
-                } else {
-                    mExitAnimRunnable = null;
-                    if (onEnd != null) onEnd.run();
+        mExitAnim = ValueAnimator.ofFloat(0f, 1f);
+        mExitAnim.setDuration(128);
+        mExitAnim.setInterpolator(new DecelerateInterpolator(1.0f));
+        mExitAnim.addUpdateListener(anim -> {
+            float ease = (float) anim.getAnimatedValue();
+            // ease-in: f^2
+            float realEase = ease * ease;
+            view.setAlpha(1f - realEase);
+            if (slideUpward) {
+                view.setTranslationY(-80f * realEase);
+            } else {
+                view.setTranslationX(-80f * realEase);
+            }
+
+            // 液态玻璃：退出时逐渐雾化
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                float blur = realEase * 16f;
+                mCurrentBlurRadius = blur;
+                if (blur > 0.5f) {
+                    view.setRenderEffect(RenderEffect.createBlurEffect(
+                        blur, blur, Shader.TileMode.CLAMP));
                 }
             }
-        };
-        mHandler.post(mExitAnimRunnable);
+        });
+        mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                mExitAnim = null;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    view.setRenderEffect(null);
+                }
+                if (onEnd != null) onEnd.run();
+            }
+        });
+        mExitAnim.start();
     }
 
     /* ================================================================ */
@@ -710,29 +738,36 @@ public class MainHook implements IXposedHookLoadPackage {
     /* ================================================================ */
     private void startBounceAnimation(final View view, final float direction) {
         cancelAllAnimations();
-        mBounceAnimRunnable = new Runnable() {
-            int step = 0;
-            final int totalSteps = 12;
-            final long stepMs = 16;
 
+        // 液态玻璃：回弹时边缘微模糊，像果冻一样
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            view.setRenderEffect(RenderEffect.createBlurEffect(
+                2f, 2f, Shader.TileMode.CLAMP));
+        }
+
+        // 使用 OvershootInterpolator 模拟弹性，像水滴回弹
+        mBounceAnim = ValueAnimator.ofFloat(0f, 1f);
+        mBounceAnim.setDuration(200);
+        mBounceAnim.setInterpolator(new OvershootInterpolator(1.8f));
+        mBounceAnim.addUpdateListener(anim -> {
+            float t = (float) anim.getAnimatedValue();
+            // 模拟 sin 回弹曲线，但用 Overshoot 提供更自然的物理感
+            float sin = (float) Math.sin(t * Math.PI);
+            float offset = 18f * sin * (1f - t) * direction;
+            view.setTranslationX(offset);
+            view.setAlpha(1f);
+        });
+        mBounceAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override
-            public void run() {
-                if (mBounceAnimRunnable != this) return;
-                step++;
-                float f = step / (float) totalSteps;
-                float sin = (float) Math.sin(f * Math.PI);
-                float offset = 18f * sin * (1f - f) * direction;
-                view.setTranslationX(offset);
-                view.setAlpha(1f);
-                if (step < totalSteps) {
-                    mHandler.postDelayed(this, stepMs);
-                } else {
-                    view.setTranslationX(0f);
-                    mBounceAnimRunnable = null;
+            public void onAnimationEnd(android.animation.Animator animation) {
+                mBounceAnim = null;
+                view.setTranslationX(0f);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    view.setRenderEffect(null);
                 }
             }
-        };
-        mHandler.post(mBounceAnimRunnable);
+        });
+        mBounceAnim.start();
     }
 
     /* ================================================================ */
@@ -794,14 +829,31 @@ public class MainHook implements IXposedHookLoadPackage {
                 container.setPadding(20, 14, 20, 14);
                 container.setGravity(Gravity.CENTER_VERTICAL);
 
-                // ===== 毛玻璃效果 =====
+                // ===== 液态玻璃效果 =====
+                // 1. 主背景：极低透明度 + 主题色 tint
                 GradientDrawable bg = new GradientDrawable();
                 bg.setShape(GradientDrawable.RECTANGLE);
                 bg.setCornerRadius(28);
-                bg.setColor(0xD9FFFFFF);
-                bg.setStroke(2, 0x80FFFFFF);
-                container.setBackground(bg);
-                container.setElevation(18);
+                bg.setColor(0xB3FFFFFF);  // 70% 透明度白色（更通透）
+                bg.setStroke(1, 0x60FFFFFF);  // 更细更淡的边缘
+
+                // 2. 顶部高光层：模拟玻璃表面反射
+                int[] highlightColors = new int[] {
+                    0x50FFFFFF,   // 顶部微亮
+                    0x00FFFFFF,   // 中间透明
+                    0x20FFFFFF    // 底部微亮
+                };
+                GradientDrawable highlight = new GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM, highlightColors);
+                highlight.setShape(GradientDrawable.RECTANGLE);
+                highlight.setCornerRadius(28);
+
+                // 3. 组合背景（主背景 + 高光叠加）
+                android.graphics.drawable.LayerDrawable glassBg =
+                    new android.graphics.drawable.LayerDrawable(
+                        new android.graphics.drawable.Drawable[] { bg, highlight });
+                container.setBackground(glassBg);
+                container.setElevation(12);  // 略降阴影，更轻盈
 
                 // ===== 图标 =====
                 ImageView iconView = new ImageView(mContext);
@@ -889,6 +941,14 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                                 mVelocityTracker = android.view.VelocityTracker.obtain();
                                 mVelocityTracker.addMovement(event);
+
+                                // 液态玻璃：按压时像水一样凹陷 + 微模糊
+                                v.animate().scaleX(0.97f).scaleY(0.97f)
+                                    .setDuration(80).setInterpolator(new DecelerateInterpolator()).start();
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                    v.setRenderEffect(RenderEffect.createBlurEffect(
+                                        3f, 3f, Shader.TileMode.CLAMP));
+                                }
                                 return true;
 
                             case MotionEvent.ACTION_MOVE:
@@ -929,6 +989,13 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return true;
 
                             case MotionEvent.ACTION_UP:
+                                // 液态玻璃：释放时恢复形状 + 去模糊
+                                v.animate().scaleX(1f).scaleY(1f)
+                                    .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && mCurrentBlurRadius < 1f) {
+                                    v.setRenderEffect(null);
+                                }
+
                                 float totalDx = event.getRawX() - startX;
                                 float totalDy = event.getRawY() - startY;
 
