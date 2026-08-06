@@ -73,7 +73,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private String mUserDismissedKey = null;
     private long mUserDismissTime = 0;
-    private static final long USER_DISMISS_COOLDOWN_MS = 5000;
+    private static final long USER_DISMISS_COOLDOWN_MS = 2000;
+
+    private long mGlobalCooldownTime = 0;
+    private static final long GLOBAL_COOLDOWN_MS = 1000;
 
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -158,7 +161,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedHelpers.findAndHookMethod(statusBarClass, "expandNotificationsPanel", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         mIsPanelExpanded = true;
-                        if (mCurrentOverlay != null) removeOverlayImmediate();
+                        triggerGlobalCooldown();
                     }
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook expandNotificationsPanel skipped: " + t); }
@@ -167,7 +170,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         boolean visible = (boolean) param.args[0];
                         mIsPanelExpanded = visible;
-                        if (visible && mCurrentOverlay != null) removeOverlayImmediate();
+                        if (visible) triggerGlobalCooldown();
                     }
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook setExpandedVisible skipped: " + t); }
@@ -175,7 +178,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedHelpers.findAndHookMethod(statusBarClass, "makeExpandedVisible", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         mIsPanelExpanded = true;
-                        if (mCurrentOverlay != null) removeOverlayImmediate();
+                        triggerGlobalCooldown();
                     }
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook makeExpandedVisible skipped: " + t); }
@@ -185,7 +188,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStarted", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         mIsPanelExpanded = true;
-                        if (mCurrentOverlay != null) removeOverlayImmediate();
+                        triggerGlobalCooldown();
                     }
                 });
                 XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStopped", new XC_MethodHook() {
@@ -275,6 +278,15 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) { return false; }
     }
 
+    private boolean isGlobalCooldown() {
+        return SystemClock.elapsedRealtime() - mGlobalCooldownTime < GLOBAL_COOLDOWN_MS;
+    }
+
+    private void triggerGlobalCooldown() {
+        mGlobalCooldownTime = SystemClock.elapsedRealtime();
+        if (mCurrentOverlay != null) removeOverlayImmediate();
+    }
+
     private void registerScreenReceiver() {
         if (mBroadcastRegistered || mContext == null) return;
         try {
@@ -298,6 +310,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpIsVisible", new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
                     try {
+                        if (isGlobalCooldown()) { param.setResult(null); return; }
                         if (isStatusBarExpanded()) { param.setResult(null); return; }
                         View rowView = (View) param.thisObject;
                         if (!isLandscape(rowView)) return;
@@ -337,6 +350,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(rowClass, "setHeadsUpAnimatingAway", boolean.class, new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
                     try {
+                        if (isGlobalCooldown()) { param.setResult(null); return; }
                         if (isStatusBarExpanded()) { param.setResult(null); return; }
                         boolean animatingAway = (boolean) param.args[0];
                         View rowView = (View) param.thisObject;
@@ -863,6 +877,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void expandStatusBar() {
+        triggerGlobalCooldown();
         try {
             Object sbm = mContext.getSystemService("statusbar");
             if (sbm != null) {
