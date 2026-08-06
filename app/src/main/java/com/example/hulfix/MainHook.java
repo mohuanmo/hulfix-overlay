@@ -93,6 +93,8 @@ public class MainHook implements IXposedHookLoadPackage {
     private long mGlobalCooldownTime = 0;
     private static final long GLOBAL_COOLDOWN_MS = 1000;
     private boolean mShieldActive = false;
+    private Runnable mShieldDismissRunnable = null;
+    private static final long SHIELD_HOLD_MS = 800;
 
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -306,6 +308,10 @@ public class MainHook implements IXposedHookLoadPackage {
     private void triggerGlobalCooldown() {
         mGlobalCooldownTime = SystemClock.elapsedRealtime();
         mShieldActive = true;
+        if (mShieldDismissRunnable != null) {
+            mHandler.removeCallbacks(mShieldDismissRunnable);
+            mShieldDismissRunnable = null;
+        }
         if (mCurrentOverlay != null) removeOverlayImmediate();
     }
 
@@ -425,9 +431,11 @@ public class MainHook implements IXposedHookLoadPackage {
                         StatusBarNotification sbn = getSbnFromRow(rowView);
                         if (sbn != null) {
                             if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
+                                XposedBridge.log(TAG + ": onTouchEvent blocked by currentKey match");
                                 param.setResult(true); return;
                             }
                             if (mShieldActive) {
+                                XposedBridge.log(TAG + ": onTouchEvent blocked by shield");
                                 param.setResult(true); return;
                             }
                         }
@@ -444,9 +452,11 @@ public class MainHook implements IXposedHookLoadPackage {
                         StatusBarNotification sbn = getSbnFromRow(rowView);
                         if (sbn != null) {
                             if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
+                                XposedBridge.log(TAG + ": dispatchTouchEvent blocked by currentKey match");
                                 param.setResult(true); return;
                             }
                             if (mShieldActive) {
+                                XposedBridge.log(TAG + ": dispatchTouchEvent blocked by shield");
                                 param.setResult(true); return;
                             }
                         }
@@ -464,9 +474,11 @@ public class MainHook implements IXposedHookLoadPackage {
                             StatusBarNotification sbn = getSbnFromRow(rowView);
                             if (sbn != null) {
                                 if (mCurrentKey != null && mCurrentKey.equals(sbn.getKey())) {
+                                    XposedBridge.log(TAG + ": onInterceptTouchEvent blocked by currentKey match");
                                     param.setResult(true); return;
                                 }
                                 if (mShieldActive) {
+                                    XposedBridge.log(TAG + ": onInterceptTouchEvent blocked by shield");
                                     param.setResult(true); return;
                                 }
                             }
@@ -1206,6 +1218,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 mWindowManager.addView(root, params);
                 mShieldActive = true;
+                if (mShieldDismissRunnable != null) {
+                    mHandler.removeCallbacks(mShieldDismissRunnable);
+                    mShieldDismissRunnable = null;
+                }
                 mCurrentKey = key;
                 mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
@@ -1451,7 +1467,16 @@ public class MainHook implements IXposedHookLoadPackage {
         mCurrentRowView = null;
         mCurrentOverlay = null;
         mCurrentContentHash = null;
-        mShieldActive = false;
+        // 延迟关闭 Shield，防止系统通知行回收前被点击
+        if (mShieldDismissRunnable != null) {
+            mHandler.removeCallbacks(mShieldDismissRunnable);
+        }
+        mShieldDismissRunnable = () -> {
+            mShieldActive = false;
+            mShieldDismissRunnable = null;
+            XposedBridge.log(TAG + ": Shield deactivated after hold period");
+        };
+        mHandler.postDelayed(mShieldDismissRunnable, SHIELD_HOLD_MS);
     }
 
     private class LiquidGlassView extends View {
