@@ -10,8 +10,8 @@ android {
         applicationId "com.example.hulfix"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "2.0"
+        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
+        versionName "22.0"
     }
 
     buildTypes {
