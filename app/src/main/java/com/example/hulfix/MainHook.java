@@ -719,50 +719,34 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mGlassView != null) mGlassView.setCornerRadius(WIN_H * 0.5f);
 
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(520);
-        mEnterAnim.setInterpolator(null);
+        mEnterAnim.setDuration(350);
+        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.5f));
         mEnterAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
             mEnterProgress = t;
-            float containerAlpha, containerScale, cornerRadius;
 
-            // === 容器主体动画 ===
-            if (t < 0.08f) {
-                // 阶段1：圆点凝聚（0~42ms）
-                float p = t / 0.08f;
-                float ease = p * p;
-                containerAlpha = 0.5f + ease * 0.3f;  // 初始 alpha 0.5，避免黑色波纹
-                containerScale = ease * 0.15f;
-                cornerRadius = WIN_H * 0.5f;
-            } else if (t < 0.28f) {
-                // 阶段2：爆发膨胀到 overshoot（42~146ms）
-                float p = (t - 0.08f) / 0.20f;
-                float ease = 1f - (1f - p) * (1f - p) * (1f - p);
-                containerAlpha = 0.3f + ease * 0.7f;
-                containerScale = 0.15f + 1.0f * ease;
-                cornerRadius = WIN_H * 0.5f * (1f - ease * 0.85f) + 28f * (ease * 0.85f);
-            } else if (t < 0.55f) {
-                // 阶段3：弹性回弹（146~286ms）—— 阻尼弹簧 2~3次抖动
-                float p = (t - 0.28f) / 0.27f;
-                float decay = (float) Math.exp(-4.5f * p);
-                float oscillation = (float) Math.sin(p * Math.PI * 4.5f);
-                float bounce = decay * oscillation * 0.12f;
-                containerAlpha = 1f;
-                containerScale = 1.15f - 0.15f * p + bounce;
-                cornerRadius = 28f + (WIN_H * 0.08f) * decay * Math.abs(oscillation);
+            // === 容器主体动画：3阶段简化 ===
+            float containerAlpha, containerScale, cornerRadius;
+            if (t < 0.4f) {
+                // 阶段1：淡入+轻微放大（0~140ms）
+                float p = t / 0.4f;
+                float ease = p * p * (3f - 2f * p);  // smoothstep
+                containerAlpha = 0.6f + 0.4f * ease;   // 从 0.6 到 1.0
+                containerScale = 0.88f + 0.14f * ease; // 从 0.88 到 1.02
+                cornerRadius = 28f;
             } else if (t < 0.75f) {
-                // 阶段4：稳定收敛（286~390ms）
-                float p = (t - 0.55f) / 0.20f;
+                // 阶段2：轻微 overshoot 回弹（140~262ms）
+                float p = (t - 0.4f) / 0.35f;
                 float ease = p * p * (3f - 2f * p);
                 containerAlpha = 1f;
-                containerScale = 1.0f;
-                cornerRadius = 28f + (WIN_H * 0.08f) * (1f - ease);
+                // 1.02 → 1.0，带轻微弹性
+                float overshoot = (float) Math.sin(p * Math.PI) * 0.015f;
+                containerScale = 1.02f - 0.02f * ease + overshoot;
+                cornerRadius = 28f;
             } else {
-                // 阶段5：稳定呼吸（390~520ms）
-                float p = (t - 0.75f) / 0.25f;
-                float breath = (float) Math.sin(p * Math.PI * 2) * 0.003f;
+                // 阶段3：稳定（262~350ms）
                 containerAlpha = 1f;
-                containerScale = 1.0f + breath;
+                containerScale = 1f;
                 cornerRadius = 28f;
             }
 
@@ -771,41 +755,31 @@ public class MainHook implements IXposedHookLoadPackage {
             view.setScaleY(containerScale);
             if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
 
-            // === 背景模糊淡入（膨胀到60%左右开始）===
+            // === 背景模糊淡入（同步进行）===
             if (mBgImageView != null) {
-                float bgAlpha;
-                if (t < 0.08f) {
-                    float p = t / 0.08f;
-                    bgAlpha = 0.6f * p * p;
-                } else if (t < 0.25f) {
-                    bgAlpha = 0.6f;
-                } else {
-                    float bp = Math.min(1f, (t - 0.25f) / 0.35f);
-                    bgAlpha = bp * bp * (3f - 2f * bp);
-                }
+                float bgAlpha = Math.min(1f, t * 2.5f);  // 快速淡入
                 mBgImageView.setAlpha(bgAlpha);
             }
 
-            // === 内容 Stagger ===
-            // 图标：t=0.18 开始弹出（94ms）
-            if (mIconView != null && t > 0.18f) {
-                float ip = Math.min(1f, (t - 0.18f) / 0.18f);
-                float iease = 1f - (1f - ip) * (1f - ip) * (1f - ip);
-                float ibounce = (float) Math.sin(ip * Math.PI) * 0.15f;
+            // === 内容 Stagger（简化）===
+            // 图标：t=0.15 开始淡入（52ms）
+            if (mIconView != null && t > 0.15f) {
+                float ip = Math.min(1f, (t - 0.15f) / 0.25f);
+                float iease = ip * ip * (3f - 2f * ip);
                 mIconView.setAlpha(iease);
-                mIconView.setScaleX(iease + ibounce);
-                mIconView.setScaleY(iease + ibounce);
+                mIconView.setScaleX(0.8f + 0.2f * iease);
+                mIconView.setScaleY(0.8f + 0.2f * iease);
             }
-            // 标题：t=0.30 开始从左滑入（156ms）
-            if (mTitleView != null && t > 0.30f) {
-                float tp = Math.min(1f, (t - 0.30f) / 0.20f);
+            // 标题：t=0.25 开始淡入（87ms）
+            if (mTitleView != null && t > 0.25f) {
+                float tp = Math.min(1f, (t - 0.25f) / 0.20f);
                 float tease = tp * tp * (3f - 2f * tp);
                 mTitleView.setAlpha(tease);
-                mTitleView.setTranslationX(-30f * (1f - tease));
+                mTitleView.setTranslationX(-15f * (1f - tease));
             }
-            // 内容文字：t=0.42 开始淡入（218ms）
-            if (mTextView != null && t > 0.42f) {
-                float cp = Math.min(1f, (t - 0.42f) / 0.18f);
+            // 内容文字：t=0.35 开始淡入（122ms）
+            if (mTextView != null && t > 0.35f) {
+                float cp = Math.min(1f, (t - 0.35f) / 0.18f);
                 float cease = cp * cp * (3f - 2f * cp);
                 mTextView.setAlpha(cease);
             }
@@ -834,49 +808,67 @@ public class MainHook implements IXposedHookLoadPackage {
         XposedBridge.log(TAG + "[DIAG] startExitAnimation called, direction=" + exitDirection);
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        // 内容先淡出
-        if (mTextView != null) mTextView.animate().alpha(0f).setDuration(80).start();
-        if (mTitleView != null) mTitleView.animate().alpha(0f).setDuration(80).setStartDelay(20).start();
-        if (mIconView != null) mIconView.animate().alpha(0f).scaleX(0.5f).scaleY(0.5f).setDuration(80).setStartDelay(40).start();
-        if (mBgImageView != null) mBgImageView.animate().alpha(0f).setDuration(120).start();
+        // 内容先收回（Stagger 反向）
+        if (mTextView != null) mTextView.animate().alpha(0f).setDuration(60).start();
+        if (mTitleView != null) mTitleView.animate().alpha(0f).translationX(-15f).setDuration(80).setStartDelay(30).start();
+        if (mIconView != null) mIconView.animate().alpha(0f).scaleX(0.5f).scaleY(0.5f).setDuration(80).setStartDelay(60).start();
+        if (mBgImageView != null) mBgImageView.animate().alpha(0f).setDuration(100).start();
 
-        // 根据方向计算飞出目标位置
-        float targetTransX = 0f, targetTransY = 0f;
-        switch (exitDirection) {
-            case 0: // 左滑 → 向左飞出屏幕
-                targetTransX = -WIN_W * 1.5f;
-                targetTransY = 0f;
-                break;
-            case 2: // 右滑 → 向右飞出屏幕
-                targetTransX = WIN_W * 1.5f;
-                targetTransY = 0f;
-                break;
-            case 1: // 上滑 → 向上飞出屏幕
-                targetTransX = 0f;
-                targetTransY = -WIN_H * 2.0f;
-                break;
-            default: // 默认向上
-                targetTransX = 0f;
-                targetTransY = -WIN_H * 2.0f;
-                break;
-        }
-
-        // 使用 ViewPropertyAnimator 实现飞出+淡出效果
-        view.animate()
-            .translationX(targetTransX)
-            .translationY(targetTransY)
-            .alpha(0f)
-            .scaleX(0.85f)
-            .scaleY(0.85f)
-            .setDuration(350)
-            .setInterpolator(new DecelerateInterpolator(1.5f))
-            .setListener(new android.animation.AnimatorListenerAdapter() {
-                @Override public void onAnimationEnd(android.animation.Animator animation) {
-                    view.setLayerType(View.LAYER_TYPE_NONE, null);
-                    if (onEnd != null) onEnd.run();
+        mExitAnim = ValueAnimator.ofFloat(0f, 1f);
+        mExitAnim.setDuration(280);
+        mExitAnim.setInterpolator(null);
+        mExitAnim.addUpdateListener(anim -> {
+            float t = (float) anim.getAnimatedValue();
+            float alpha, scale, cornerRadius, transX, transY;
+            if (t < 0.25f) {
+                // 阶段1：吸一下（0~70ms）
+                float p = t / 0.25f;
+                float ease = p * p;
+                alpha = 1f - ease * 0.1f;
+                scale = 1f - ease * 0.12f;
+                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * ease * 0.3f;
+                transX = 0f; transY = 0f;
+            } else if (t < 0.65f) {
+                // 阶段2：缩成圆点（70~182ms）
+                float p = (t - 0.25f) / 0.40f;
+                float ease = p * p * p;
+                alpha = 0.9f - ease * 0.7f;
+                scale = 0.88f - ease * 0.88f;
+                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * (0.3f + ease * 0.7f);
+                switch (exitDirection) {
+                    case 1: transX = 0f; transY = -10f * ease; break;
+                    case 2: transX = 10f * ease; transY = 0f; break;
+                    default: transX = -10f * ease; transY = 0f; break;
                 }
-            })
-            .start();
+            } else {
+                // 阶段3："啵"地消失（182~280ms）
+                float p = (t - 0.65f) / 0.35f;
+                float ease = p * p * p * p;
+                alpha = 0.2f * (1f - ease);
+                scale = ease * 0.02f;
+                cornerRadius = WIN_H * 0.5f;
+                switch (exitDirection) {
+                    case 1: transX = 0f; transY = -10f - 20f * ease; break;
+                    case 2: transX = 10f + 20f * ease; transY = 0f; break;
+                    default: transX = -10f - 20f * ease; transY = 0f; break;
+                }
+            }
+            view.setAlpha(Math.max(0f, alpha));
+            view.setScaleX(Math.max(0.01f, scale));
+            view.setScaleY(Math.max(0.01f, scale));
+            view.setTranslationX(transX);
+            view.setTranslationY(transY);
+            if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
+        });
+        mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (mExitAnim != animation) return;
+                mExitAnim = null;
+                view.setLayerType(View.LAYER_TYPE_NONE, null);
+                if (onEnd != null) onEnd.run();
+            }
+        });
+        mExitAnim.start();
     }
 
     private void startBounceAnimation(final View view, final float direction) {
@@ -884,14 +876,14 @@ public class MainHook implements IXposedHookLoadPackage {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mBounceAnim = ValueAnimator.ofFloat(0f, 1f);
-        mBounceAnim.setDuration(450);
+        mBounceAnim.setDuration(300);
         mBounceAnim.setInterpolator(null);
         mBounceAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            // 强果冻感：衰减更慢，振荡更多（2.5个周期）
-            float decay = (float) Math.exp(-4 * t);
-            float oscillation = (float) Math.sin(t * Math.PI * 5);
-            float offset = 28f * decay * oscillation * direction;
+            // 轻微回弹：1个周期，小振幅
+            float decay = (float) Math.exp(-6 * t);
+            float oscillation = (float) Math.sin(t * Math.PI * 3);
+            float offset = 12f * decay * oscillation * direction;  // 28f → 12f
             view.setTranslationX(offset);
             view.setAlpha(1f);
         });
@@ -988,9 +980,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 ImageView bgView = new ImageView(mContext);
                 bgView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 bgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                // 设置默认底色，避免透明区域显示黑色波纹
-                int defaultBgColor = isDark ? 0xFF1A1A2E : 0xFFF0F0F5;
-                bgView.setBackgroundColor(defaultBgColor);
                 root.addView(bgView);
                 mBgImageView = bgView;
 
@@ -1785,7 +1774,7 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         private void drawNoise(Canvas canvas) {
-            mNoisePaint.setAlpha((int)(75 * mBreathAlpha));
+            mNoisePaint.setAlpha((int)(40 * mBreathAlpha));
             canvas.drawRect(mDrawRect, mNoisePaint);
         }
 
