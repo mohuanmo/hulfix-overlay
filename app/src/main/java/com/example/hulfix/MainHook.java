@@ -254,60 +254,104 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private StatusBarNotification extractSbnFromArgs(Object[] args) {
+        XposedBridge.log(TAG + "[DIAG] extractSbnFromArgs called, args count=" + args.length);
         // 1. 直接查找 StatusBarNotification 参数
-        for (Object arg : args) {
+        for (int i = 0; i < args.length; i++) {
+            Object arg = args[i];
+            String type = arg != null ? arg.getClass().getName() : "null";
+            XposedBridge.log(TAG + "[DIAG] arg[" + i + "] type=" + type);
             if (arg instanceof StatusBarNotification) {
+                XposedBridge.log(TAG + "[DIAG] Found StatusBarNotification at arg[" + i + "]");
                 return (StatusBarNotification) arg;
             }
         }
         // 2. 从 NotificationEntry 反射获取 mSbn 或 getSbn()
-        for (Object arg : args) {
+        for (int i = 0; i < args.length; i++) {
+            Object arg = args[i];
             if (arg == null) continue;
             try {
-                // 尝试 getSbn() 方法
                 Object result = XposedHelpers.callMethod(arg, "getSbn");
                 if (result instanceof StatusBarNotification) {
+                    XposedBridge.log(TAG + "[DIAG] Extracted SBN via getSbn() from arg[" + i + "]");
                     return (StatusBarNotification) result;
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + "[DIAG] getSbn() failed for arg[" + i + "]: " + t.getMessage());
+            }
             try {
-                // 尝试 mSbn 字段
                 Object result = XposedHelpers.getObjectField(arg, "mSbn");
                 if (result instanceof StatusBarNotification) {
+                    XposedBridge.log(TAG + "[DIAG] Extracted SBN via mSbn field from arg[" + i + "]");
                     return (StatusBarNotification) result;
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + "[DIAG] mSbn field failed for arg[" + i + "]: " + t.getMessage());
+            }
             try {
-                // 尝试 sbn 字段
                 Object result = XposedHelpers.getObjectField(arg, "sbn");
                 if (result instanceof StatusBarNotification) {
+                    XposedBridge.log(TAG + "[DIAG] Extracted SBN via sbn field from arg[" + i + "]");
                     return (StatusBarNotification) result;
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + "[DIAG] sbn field failed for arg[" + i + "]: " + t.getMessage());
+            }
         }
+        XposedBridge.log(TAG + "[DIAG] extractSbnFromArgs: FAILED to find StatusBarNotification");
         return null;
     }
 
     private void processNotification(StatusBarNotification sbn) {
         try {
-            XposedBridge.log(TAG + ": processNotification called, pkg=" + (sbn != null ? sbn.getPackageName() : "null"));
-            if (sbn == null) return;
+            XposedBridge.log(TAG + "[DIAG] === processNotification START ===");
+            XposedBridge.log(TAG + "[DIAG] pkg=" + (sbn != null ? sbn.getPackageName() : "null")
+                + ", key=" + (sbn != null ? sbn.getKey() : "null"));
+            if (sbn == null) {
+                XposedBridge.log(TAG + "[DIAG] sbn is null, returning");
+                return;
+            }
             final String key = sbn.getKey();
             final Notification notification = sbn.getNotification();
 
-            if (BLOCK_PKG.equals(sbn.getPackageName())) return;
-            if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) return;
-            if ((notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) return;
-            if (!isFreshNotification(sbn)) return;
-            if (mUserDismissedKey != null && key.equals(mUserDismissedKey)
-                && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS) return;
-            if (isGlobalCooldown()) return;
-            if (isStatusBarExpanded()) return;
-            if (isKeyguardLocked()) return;
+            if (BLOCK_PKG.equals(sbn.getPackageName())) {
+                XposedBridge.log(TAG + "[DIAG] BLOCKED by BLOCK_PKG: " + sbn.getPackageName());
+                return;
+            }
+            if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) {
+                XposedBridge.log(TAG + "[DIAG] BLOCKED by FLAG_ONGOING_EVENT");
+                return;
+            }
+            if ((notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0) {
+                XposedBridge.log(TAG + "[DIAG] BLOCKED by FLAG_FOREGROUND_SERVICE");
+                return;
+            }
+            boolean fresh = isFreshNotification(sbn);
+            XposedBridge.log(TAG + "[DIAG] isFreshNotification=" + fresh);
+            if (!fresh) return;
 
+            boolean userIgnored = mUserDismissedKey != null && key.equals(mUserDismissedKey)
+                && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS;
+            XposedBridge.log(TAG + "[DIAG] userIgnored=" + userIgnored);
+            if (userIgnored) return;
+
+            boolean globalCooldown = isGlobalCooldown();
+            XposedBridge.log(TAG + "[DIAG] isGlobalCooldown=" + globalCooldown);
+            if (globalCooldown) return;
+
+            boolean panelExpanded = isStatusBarExpanded();
+            XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + panelExpanded);
+            if (panelExpanded) return;
+
+            boolean keyguard = isKeyguardLocked();
+            XposedBridge.log(TAG + "[DIAG] isKeyguardLocked=" + keyguard);
+            if (keyguard) return;
+
+            XposedBridge.log(TAG + "[DIAG] All checks passed, calling showCustomHeadsUp");
             showCustomHeadsUp(sbn);
+            XposedBridge.log(TAG + "[DIAG] === processNotification END ===");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": processNotification error: " + t);
+            XposedBridge.log(TAG + "[DIAG] processNotification ERROR: " + t);
+            XposedBridge.log(TAG + "[DIAG] Stack: " + android.util.Log.getStackTraceString(t));
         }
     }
 
@@ -370,26 +414,56 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private boolean isFreshNotification(StatusBarNotification sbn) {
-        return System.currentTimeMillis() - sbn.getPostTime() <= NOTIFICATION_MAX_AGE_MS;
+        long age = System.currentTimeMillis() - sbn.getPostTime();
+        boolean result = age <= NOTIFICATION_MAX_AGE_MS;
+        XposedBridge.log(TAG + "[DIAG] isFreshNotification: age=" + age + "ms, max=" + NOTIFICATION_MAX_AGE_MS + "ms, result=" + result);
+        return result;
     }
 
     private boolean isKeyguardLocked() {
-        if (mContext == null) return false;
+        if (mContext == null) {
+            XposedBridge.log(TAG + "[DIAG] isKeyguardLocked: mContext null, returning false");
+            return false;
+        }
         try {
             KeyguardManager km = (KeyguardManager) mContext.getSystemService(Context.KEYGUARD_SERVICE);
-            return km != null && km.isKeyguardLocked();
-        } catch (Throwable t) { return false; }
+            boolean result = km != null && km.isKeyguardLocked();
+            XposedBridge.log(TAG + "[DIAG] isKeyguardLocked=" + result);
+            return result;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "[DIAG] isKeyguardLocked exception: " + t);
+            return false;
+        }
     }
 
     private boolean isStatusBarExpanded() {
-        if (mIsPanelExpanded) return true;
-        if (mStatusBar == null) return false;
-        try { return XposedHelpers.getBooleanField(mStatusBar, "mExpandedVisible"); }
-        catch (Throwable t1) {
-            try { return XposedHelpers.getBooleanField(mStatusBar, "mIsExpanded"); }
-            catch (Throwable t2) {
-                try { return XposedHelpers.getBooleanField(mStatusBar, "mPanelExpanded"); }
-                catch (Throwable ignored) { return false; }
+        XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded: mIsPanelExpanded=" + mIsPanelExpanded + ", mStatusBar=" + (mStatusBar != null));
+        if (mIsPanelExpanded) {
+            XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=true (mIsPanelExpanded)");
+            return true;
+        }
+        if (mStatusBar == null) {
+            XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=false (mStatusBar null)");
+            return false;
+        }
+        try {
+            boolean r = XposedHelpers.getBooleanField(mStatusBar, "mExpandedVisible");
+            XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + r + " (mExpandedVisible)");
+            return r;
+        } catch (Throwable t1) {
+            try {
+                boolean r = XposedHelpers.getBooleanField(mStatusBar, "mIsExpanded");
+                XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + r + " (mIsExpanded)");
+                return r;
+            } catch (Throwable t2) {
+                try {
+                    boolean r = XposedHelpers.getBooleanField(mStatusBar, "mPanelExpanded");
+                    XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + r + " (mPanelExpanded)");
+                    return r;
+                } catch (Throwable ignored) {
+                    XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=false (all fields missing)");
+                    return false;
+                }
             }
         }
     }
@@ -403,15 +477,20 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private boolean isGlobalCooldown() {
-        return SystemClock.elapsedRealtime() - mGlobalCooldownTime < GLOBAL_COOLDOWN_MS;
+        long elapsed = SystemClock.elapsedRealtime() - mGlobalCooldownTime;
+        boolean result = elapsed < GLOBAL_COOLDOWN_MS;
+        XposedBridge.log(TAG + "[DIAG] isGlobalCooldown=" + result + " (elapsed=" + elapsed + "ms, threshold=" + GLOBAL_COOLDOWN_MS + "ms)");
+        return result;
     }
 
     private void triggerGlobalCooldown() {
+        XposedBridge.log(TAG + "[DIAG] triggerGlobalCooldown called");
         mGlobalCooldownTime = SystemClock.elapsedRealtime();
         if (mCurrentOverlay != null) removeOverlayImmediate();
     }
 
     private void registerScreenReceiver() {
+        XposedBridge.log(TAG + "[DIAG] registerScreenReceiver called, registered=" + mBroadcastRegistered + ", ctx=" + (mContext != null));
         if (mBroadcastRegistered || mContext == null) return;
         try {
             mScreenReceiver = new BroadcastReceiver() {
@@ -460,6 +539,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
 
     private void cancelAllAnimations() {
+        XposedBridge.log(TAG + "[DIAG] cancelAllAnimations called");
         ValueAnimator enter = mEnterAnim;
         ValueAnimator exit = mExitAnim;
         ValueAnimator bounce = mBounceAnim;
@@ -479,6 +559,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void startEnterAnimation(final View view) {
+        XposedBridge.log(TAG + "[DIAG] startEnterAnimation called");
         cancelAllAnimations();
         // 初始状态：完全看不见的圆点
         view.setAlpha(0f);
@@ -603,6 +684,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void startExitAnimation(final View view, final Runnable onEnd, final int exitDirection) {
+        XposedBridge.log(TAG + "[DIAG] startExitAnimation called, direction=" + exitDirection);
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         // 内容先收回（Stagger 反向）
@@ -669,6 +751,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void startBounceAnimation(final View view, final float direction) {
+        XposedBridge.log(TAG + "[DIAG] startBounceAnimation called, direction=" + direction);
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mBounceAnim = ValueAnimator.ofFloat(0f, 1f);
@@ -695,10 +778,19 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void showCustomHeadsUp(StatusBarNotification sbn) {
-        if (mContext == null || mWindowManager == null) return;
+        XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp called");
+        XposedBridge.log(TAG + "[DIAG] mContext=" + (mContext != null) + ", mWindowManager=" + (mWindowManager != null) + ", mHandler=" + (mHandler != null));
+        if (mContext == null || mWindowManager == null) {
+            XposedBridge.log(TAG + "[DIAG] ABORT: mContext or mWindowManager is null");
+            return;
+        }
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
-        if (isKeyguardLocked() || isStatusBarExpanded()) return;
+        if (isKeyguardLocked() || isStatusBarExpanded()) {
+            XposedBridge.log(TAG + "[DIAG] ABORT: keyguard or panel expanded");
+            return;
+        }
         registerScreenReceiver();
+        XposedBridge.log(TAG + "[DIAG] Screen receiver registered");
 
         final String key = sbn.getKey();
         final Notification notification = sbn.getNotification();
@@ -706,17 +798,24 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: inside Handler post");
                 Bundle extras = notification.extras;
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: extras=" + (extras != null));
                 String title = extras.getString(Notification.EXTRA_TITLE, "");
                 CharSequence text = extras.getCharSequence(Notification.EXTRA_TEXT, "");
                 CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "");
                 String content = (bigText != null && bigText.length() > 0) ? bigText.toString() : text.toString();
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: title=" + title + ", content=" + content);
                 String newContent = title + "|" + content;
                 String newHash = Integer.toHexString(newContent.hashCode() & 0x7FFFFFFF);
 
                 if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
-                    if (newHash.equals(mCurrentContentHash)) return;
+                    if (newHash.equals(mCurrentContentHash)) {
+                        XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: same content hash, skipping");
+                        return;
+                    }
                 }
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: removing old overlay");
                 removeOverlayImmediate();
                 mCurrentContentHash = newHash;
 
@@ -927,38 +1026,53 @@ public class MainHook implements IXposedHookLoadPackage {
                 params.gravity = Gravity.TOP | Gravity.LEFT;
                 params.x = WIN_X;
                 params.y = WIN_Y;
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: LayoutParams created, type=" + WINDOW_TYPE + ", x=" + WIN_X + ", y=" + WIN_Y);
 
                 try {
+                    XposedBridge.log(TAG + "[DIAG] Adding overlay view to WindowManager");
                     mWindowManager.addView(root, params);
+                    XposedBridge.log(TAG + "[DIAG] addView SUCCESS");
                 } catch (IllegalStateException e) {
-                    XposedBridge.log(TAG + ": addView failed - view already added, removing old first");
+                    XposedBridge.log(TAG + "[DIAG] addView failed - view already added, removing old first");
                     removeOverlayImmediate();
-                    try { mWindowManager.addView(root, params); } catch (Throwable t2) {
-                        XposedBridge.log(TAG + ": addView retry failed: " + t2);
+                    try {
+                        mWindowManager.addView(root, params);
+                        XposedBridge.log(TAG + "[DIAG] addView retry SUCCESS");
+                    } catch (Throwable t2) {
+                        XposedBridge.log(TAG + "[DIAG] addView retry failed: " + t2);
                         return;
                     }
                 } catch (Throwable e) {
-                    XposedBridge.log(TAG + ": addView failed: " + e);
+                    XposedBridge.log(TAG + "[DIAG] addView failed: " + e);
+                    XposedBridge.log(TAG + "[DIAG] addView exception: " + android.util.Log.getStackTraceString(e));
                     return;
                 }
                 mCurrentKey = key;
                 mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
+                XposedBridge.log(TAG + "[DIAG] Overlay shown successfully, key=" + key);
 
                 // 首次截屏+模糊
                 updateBackground();
                 startBackgroundUpdate();
 
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: starting enter animation");
                 startEnterAnimation(contentContainer);
-                mAutoDismissRunnable = () -> dismissOverlayAnimated(1);
+                mAutoDismissRunnable = () -> {
+                    XposedBridge.log(TAG + "[DIAG] Auto-dismiss triggered");
+                    dismissOverlayAnimated(1);
+                };
                 mHandler.postDelayed(mAutoDismissRunnable, AUTO_DISMISS_MS);
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: auto-dismiss scheduled in " + AUTO_DISMISS_MS + "ms");
             } catch (Throwable t) {
-                XposedBridge.log(TAG + ": showCustomHeadsUp error: " + t);
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp ERROR: " + t);
+                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp stack: " + android.util.Log.getStackTraceString(t));
             }
         });
     }
 
     private void performContentClick(PendingIntent contentIntent) {
+        XposedBridge.log(TAG + "[DIAG] performContentClick called, intent=" + (contentIntent != null));
         if (contentIntent == null) return;
         try {
             Bundle opts = createLaunchOptions();
@@ -982,6 +1096,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void expandStatusBar() {
+        XposedBridge.log(TAG + "[DIAG] expandStatusBar called");
         triggerGlobalCooldown();
         try {
             Object sbm = mContext.getSystemService("statusbar");
@@ -995,8 +1110,13 @@ public class MainHook implements IXposedHookLoadPackage {
     private void dismissOverlayAnimated() { dismissOverlayAnimated(1); }
 
     private void dismissOverlayAnimated(final int exitDirection) {
-        if (mHandler == null) return;
+        XposedBridge.log(TAG + "[DIAG] dismissOverlayAnimated called, direction=" + exitDirection);
+        if (mHandler == null) {
+            XposedBridge.log(TAG + "[DIAG] dismissOverlayAnimated: mHandler null");
+            return;
+        }
         mHandler.post(() -> {
+            XposedBridge.log(TAG + "[DIAG] dismissOverlayAnimated: inside handler");
             if (mAutoDismissRunnable != null) {
                 mHandler.removeCallbacks(mAutoDismissRunnable);
                 mAutoDismissRunnable = null;
@@ -1009,20 +1129,29 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private Bitmap captureScreenBackground() {
+        XposedBridge.log(TAG + "[DIAG] captureScreenBackground called");
         try {
             Class<?> scClass = Class.forName("android.view.SurfaceControl");
             Bitmap screenshot = null;
             try {
                 screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot");
+                XposedBridge.log(TAG + "[DIAG] screenshot() success: " + (screenshot != null ? screenshot.getWidth() + "x" + screenshot.getHeight() : "null"));
             } catch (Throwable t1) {
+                XposedBridge.log(TAG + "[DIAG] screenshot() failed: " + t1.getMessage());
                 try {
                     screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot", WIN_W, WIN_H);
+                    XposedBridge.log(TAG + "[DIAG] screenshot(w,h) success: " + (screenshot != null ? screenshot.getWidth() + "x" + screenshot.getHeight() : "null"));
                 } catch (Throwable t2) {
+                    XposedBridge.log(TAG + "[DIAG] screenshot(w,h) failed: " + t2.getMessage());
                     try {
                         Object rect = android.graphics.Rect.class.getConstructor(int.class, int.class, int.class, int.class)
                             .newInstance(WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H);
                         screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot", rect);
-                    } catch (Throwable t3) { return null; }
+                        XposedBridge.log(TAG + "[DIAG] screenshot(rect) success: " + (screenshot != null ? screenshot.getWidth() + "x" + screenshot.getHeight() : "null"));
+                    } catch (Throwable t3) {
+                        XposedBridge.log(TAG + "[DIAG] screenshot(rect) failed: " + t3.getMessage());
+                        return null;
+                    }
                 }
             }
             if (screenshot != null) {
@@ -1032,17 +1161,20 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (w > 0 && h > 0) {
                     Bitmap cropped = Bitmap.createBitmap(screenshot, x, y, w, h);
                     screenshot.recycle();
+                    XposedBridge.log(TAG + "[DIAG] captureScreenBackground cropped: " + w + "x" + h);
                     return cropped;
                 }
                 return screenshot;
             }
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": captureScreenBackground failed: " + t);
+            XposedBridge.log(TAG + "[DIAG] captureScreenBackground failed: " + t);
+            XposedBridge.log(TAG + "[DIAG] Stack: " + android.util.Log.getStackTraceString(t));
         }
         return null;
     }
 
     private Bitmap fastBlur(Bitmap input) {
+        XposedBridge.log(TAG + "[DIAG] fastBlur called, input=" + (input != null ? input.getWidth() + "x" + input.getHeight() : "null"));
         if (input == null) return null;
         try {
             int w = input.getWidth(), h = input.getHeight();
@@ -1093,19 +1225,36 @@ public class MainHook implements IXposedHookLoadPackage {
             } catch (Throwable t) {}
             return result;
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": fastBlur failed: " + t);
+            XposedBridge.log(TAG + "[DIAG] fastBlur FAILED: " + t);
+            XposedBridge.log(TAG + "[DIAG] fastBlur stack: " + android.util.Log.getStackTraceString(t));
             return input;
         }
+        XposedBridge.log(TAG + "[DIAG] fastBlur completed");
     }
 
     private void updateBackground() {
-        if (mBgImageView == null || mCurrentOverlay == null || mCurrentOverlay.getParent() == null) return;
-        if (mContentView != null && (mContentView.getTranslationX() != 0f || mContentView.getTranslationY() != 0f)) return;
+        XposedBridge.log(TAG + "[DIAG] updateBackground called");
+        if (mBgImageView == null || mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
+            XposedBridge.log(TAG + "[DIAG] updateBackground skipped: bgView=" + (mBgImageView != null) + ", overlay=" + (mCurrentOverlay != null));
+            return;
+        }
+        if (mContentView != null && (mContentView.getTranslationX() != 0f || mContentView.getTranslationY() != 0f)) {
+            XposedBridge.log(TAG + "[DIAG] updateBackground skipped: content moving");
+            return;
+        }
         Bitmap screen = captureScreenBackground();
-        if (screen == null) return;
+        if (screen == null) {
+            XposedBridge.log(TAG + "[DIAG] updateBackground: captureScreenBackground returned null");
+            return;
+        }
+        XposedBridge.log(TAG + "[DIAG] updateBackground: screen captured " + screen.getWidth() + "x" + screen.getHeight());
         Bitmap blurred = fastBlur(screen);
         screen.recycle();
-        if (blurred == null) return;
+        if (blurred == null) {
+            XposedBridge.log(TAG + "[DIAG] updateBackground: fastBlur returned null");
+            return;
+        }
+        XposedBridge.log(TAG + "[DIAG] updateBackground: blur done " + blurred.getWidth() + "x" + blurred.getHeight());
         Bitmap oldBmp = mBlurredBgBitmap;
         mBlurredBgBitmap = blurred;
         mHandler.post(() -> {
@@ -1123,6 +1272,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void startBackgroundUpdate() {
+        XposedBridge.log(TAG + "[DIAG] startBackgroundUpdate called");
         stopBackgroundUpdate();
         mBgUpdateRunnable = () -> {
             if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) return;
@@ -1133,6 +1283,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void stopBackgroundUpdate() {
+        XposedBridge.log(TAG + "[DIAG] stopBackgroundUpdate called");
         if (mBgUpdateRunnable != null) {
             mHandler.removeCallbacks(mBgUpdateRunnable);
             mBgUpdateRunnable = null;
@@ -1140,6 +1291,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void removeOverlayImmediate() {
+        XposedBridge.log(TAG + "[DIAG] removeOverlayImmediate called, key=" + mCurrentKey);
         cancelAllAnimations();
         stopBackgroundUpdate();
         if (mAutoDismissRunnable != null) {
@@ -1155,11 +1307,19 @@ public class MainHook implements IXposedHookLoadPackage {
             } catch (Throwable ignored) {}
             mHandler.postDelayed(() -> {
                 try {
-                    if (overlayToRemove.getParent() != null) mWindowManager.removeView(overlayToRemove);
+                    if (overlayToRemove.getParent() != null) {
+                        mWindowManager.removeView(overlayToRemove);
+                        XposedBridge.log(TAG + "[DIAG] removeView success");
+                    } else {
+                        XposedBridge.log(TAG + "[DIAG] removeView skipped - no parent");
+                    }
                 } catch (Throwable t) {
+                    XposedBridge.log(TAG + "[DIAG] removeView failed: " + t);
                     try { mWindowManager.removeViewImmediate(overlayToRemove); } catch (Throwable ignored) {}
                 }
             }, 50);
+        } else {
+            XposedBridge.log(TAG + "[DIAG] removeOverlayImmediate: no overlay to remove");
         }
         Bitmap oldBitmap = mBlurredBgBitmap;
         mBlurredBgBitmap = null;
