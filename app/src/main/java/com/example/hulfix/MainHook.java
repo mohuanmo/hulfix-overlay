@@ -1082,12 +1082,9 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mTouchMaxDx = Math.max(mTouchMaxDx, Math.abs(dx));
                                 mTouchMaxDy = Math.max(mTouchMaxDy, Math.abs(dy));
                                 if (mVelocityTracker != null) mVelocityTracker.addMovement(event);
-                                if (lockedHorizontal) { v.setTranslationX(dx); v.setTranslationY(0); }
-                                else if (lockedVertical) { v.setTranslationX(0); v.setTranslationY(dy); }
-                                else { v.setTranslationX(dx); v.setTranslationY(dy); }
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 v.setAlpha(Math.max(0.5f, 1f - dist / 300f));
-                                // 同步移动整个 root（玻璃+背景+文字一起动）
+                                // 整体移动 root（玻璃+背景+文字一起动，避免分离）
                                 if (mCurrentOverlay != null) {
                                     mCurrentOverlay.setTranslationX(dx);
                                     mCurrentOverlay.setTranslationY(dy);
@@ -1101,8 +1098,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 }
                                 v.animate().scaleX(1f).scaleY(1f)
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
-                                v.setTranslationX(0f);
-                                v.setTranslationY(0f);
                                 v.setAlpha(1f);
                                 if (mCurrentOverlay != null) {
                                     mCurrentOverlay.setTranslationX(0f);
@@ -1112,10 +1107,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 return true;
                             case MotionEvent.ACTION_UP:
                                 if (mGlassView != null) mGlassView.clearTouchPoint();
-                                if (mCurrentOverlay != null) {
-                                    mCurrentOverlay.setTranslationX(0f);
-                                    mCurrentOverlay.setTranslationY(0f);
-                                }
                                 v.animate().scaleX(1f).scaleY(1f)
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
                                 float totalDx = event.getRawX() - startX;
@@ -1175,10 +1166,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                 boolean isFastFling = (Math.abs(velocityX) > MIN_FLING_VELOCITY)
                                     || (Math.abs(velocityY) > MIN_FLING_VELOCITY);
                                 if (hasSwipeIntent || isFastFling) {
-                                    startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
+                                    if (mCurrentOverlay != null) startBounceAnimation(mCurrentOverlay, totalDx < 0 ? -1f : 1f);
                                     return true;
                                 }
-                                startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
+                                if (mCurrentOverlay != null) startBounceAnimation(mCurrentOverlay, totalDx < 0 ? -1f : 1f);
                                 return true;
                         }
                         return false;
@@ -1639,8 +1630,8 @@ public class MainHook implements IXposedHookLoadPackage {
             mRimLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mRimLightPaint.setShader(mRimGradient);
             mRimLightPaint.setStyle(Paint.Style.STROKE);
-            mRimLightPaint.setStrokeWidth(3.5f);
-            mRimLightPaint.setMaskFilter(new android.graphics.BlurMaskFilter(5f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+            mRimLightPaint.setStrokeWidth(2.0f);
+            mRimLightPaint.setMaskFilter(new android.graphics.BlurMaskFilter(3f, android.graphics.BlurMaskFilter.Blur.NORMAL));
 
             // ========== Layer 5: 镜面扫光（LinearGradient 平移）==========
             // 斜向光泽带，模拟光源扫过
@@ -1704,12 +1695,12 @@ public class MainHook implements IXposedHookLoadPackage {
             // ========== Layer 0: 外部阴影（增强）==========
             mOuterShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mOuterShadowPaint.setColor(mIsDark ? 0x60000000 : 0x38FFFFFF);
-            mOuterShadowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(22f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+            mOuterShadowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.NORMAL));
 
             // ========== Layer 1: 外部光晕（呼吸脉动）==========
             mOuterGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mOuterGlowPaint.setColor(mIsDark ? 0x20AADDFF : 0x15FFCC88);
-            mOuterGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(16f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+            mOuterGlowPaint.setColor(mIsDark ? 0x18AADDFF : 0x12E8F4FF);
+            mOuterGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(8f, android.graphics.BlurMaskFilter.Blur.NORMAL));
 
             // ========== 体积光（中心→边缘呼吸）==========
             int volCenter = isDark ? 0x18FFFFFF : 0x20FFFFFF;
@@ -1882,7 +1873,7 @@ public class MainHook implements IXposedHookLoadPackage {
             mSpecularAnimator.start();
 
             // ---- 【新增】外发光呼吸（2000ms） ----
-            mGlowPulseAnimator = ValueAnimator.ofFloat(0.3f, 0.7f);
+            mGlowPulseAnimator = ValueAnimator.ofFloat(0.12f, 0.28f);
             mGlowPulseAnimator.setDuration(2000);
             mGlowPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
             mGlowPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
@@ -1925,7 +1916,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
             // ========== Layer 4: 菲涅尔边缘流光（SweepGradient 旋转） ==========
             // 在内容层之上绘制旋转的边缘高光
-            mRimLightPaint.setAlpha((int)(70 * mBreathAlpha));
+            mRimLightPaint.setAlpha((int)(40 * mBreathAlpha));
             // 创建比 drawRect 稍小的内边距路径，让流光在边缘内侧
             float rimInset = 2f;
             RectF rimRect = new RectF(rimInset, rimInset, mViewWidth - rimInset, mViewHeight - rimInset);
