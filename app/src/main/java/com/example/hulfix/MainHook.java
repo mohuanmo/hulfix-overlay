@@ -69,6 +69,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float SWIPE_DESTROY_THRESHOLD = 70f;
     private static final float PULLDOWN_THRESHOLD = 120f;
     private static final float DIRECTION_LOCK_SLOP = 25f;
+    private static final float ANGLE_LOCK_DEGREES = 45f; // 角度容错：±45°内为水平，之外为垂直
     private static final float MIN_FLING_VELOCITY = 200f;
     private static final float SWIPE_INTENT_THRESHOLD = 40f;
     private static final float CLICK_THRESHOLD = 8f;
@@ -1043,7 +1044,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 root.addView(contentContainer);
                 mContentView = contentContainer;
 
-                // === 触摸事件处理（只移动 contentContainer）===
+                // === 触摸事件处理（角度判定方向 + 严格方向锁定）===
                 contentContainer.setOnTouchListener(new View.OnTouchListener() {
                     float startX, startY;
                     boolean lockedHorizontal = false;
@@ -1071,10 +1072,24 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float dx = event.getRawX() - startX;
                                 float dy = event.getRawY() - startY;
                                 if (!lockedHorizontal && !lockedVertical) {
-                                    if (Math.abs(dx) > DIRECTION_LOCK_SLOP || Math.abs(dy) > DIRECTION_LOCK_SLOP) {
+                                    float distance = (float) Math.sqrt(dx * dx + dy * dy);
+                                    if (distance > DIRECTION_LOCK_SLOP) {
                                         hasMoved = true;
-                                        if (Math.abs(dx) > Math.abs(dy)) lockedHorizontal = true;
-                                        else lockedVertical = true;
+                                        // === 角度判定方向 ===
+                                        // atan2(dy,dx) 返回弧度，转换为度数 [0, 360)
+                                        double angleDeg = Math.toDegrees(Math.atan2(dy, dx));
+                                        if (angleDeg < 0) angleDeg += 360;
+                                        // 水平方向：右滑 315°-45°，左滑 135°-225°
+                                        // 垂直方向：下滑 45°-135°，上滑 225°-315°
+                                        boolean isAngleHorizontal = (angleDeg >= 315 || angleDeg <= 45)
+                                            || (angleDeg >= 135 && angleDeg <= 225);
+                                        if (isAngleHorizontal) {
+                                            lockedHorizontal = true;
+                                            XposedBridge.log(TAG + "[DIAG] Direction locked: HORIZONTAL (angle=" + (int)angleDeg + "°)");
+                                        } else {
+                                            lockedVertical = true;
+                                            XposedBridge.log(TAG + "[DIAG] Direction locked: VERTICAL (angle=" + (int)angleDeg + "°)");
+                                        }
                                     }
                                 } else {
                                     hasMoved = true;
@@ -1084,10 +1099,20 @@ public class MainHook implements IXposedHookLoadPackage {
                                 if (mVelocityTracker != null) mVelocityTracker.addMovement(event);
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 v.setAlpha(Math.max(0.5f, 1f - dist / 300f));
-                                // 整体移动 root（玻璃+背景+文字一起动，避免分离）
+                                // === 严格方向锁定移动 ===
+                                // 水平锁定：只移动 X 轴，Y 轴固定为 0
+                                // 垂直锁定：只移动 Y 轴，X 轴固定为 0
                                 if (mCurrentOverlay != null) {
-                                    mCurrentOverlay.setTranslationX(dx);
-                                    mCurrentOverlay.setTranslationY(dy);
+                                    if (lockedHorizontal) {
+                                        mCurrentOverlay.setTranslationX(dx);
+                                        mCurrentOverlay.setTranslationY(0);
+                                    } else if (lockedVertical) {
+                                        mCurrentOverlay.setTranslationX(0);
+                                        mCurrentOverlay.setTranslationY(dy);
+                                    } else {
+                                        mCurrentOverlay.setTranslationX(dx);
+                                        mCurrentOverlay.setTranslationY(dy);
+                                    }
                                 }
                                 if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), Math.min(1.0f, dist / 80f));
                                 return true;
