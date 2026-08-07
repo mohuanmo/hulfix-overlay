@@ -1229,7 +1229,6 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + "[DIAG] fastBlur stack: " + android.util.Log.getStackTraceString(t));
             return input;
         }
-        XposedBridge.log(TAG + "[DIAG] fastBlur completed");
     }
 
     private void updateBackground() {
