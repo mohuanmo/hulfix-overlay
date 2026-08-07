@@ -1471,15 +1471,49 @@ public class MainHook implements IXposedHookLoadPackage {
             return;
         }
         XposedBridge.log(TAG + "[DIAG] updateBackground: screen captured " + screen.getWidth() + "x" + screen.getHeight());
+
+        Bitmap oldBmp = mBlurredBgBitmap;
+        mBlurredBgBitmap = screen;
+
+        // Android 12+ (API 31): 使用硬件加速 RenderEffect 模糊，效果更现代、更流畅
+        if (Build.VERSION.SDK_INT >= 31) {
+            mHandler.post(() -> {
+                try {
+                    if (mBgImageView != null) {
+                        mBgImageView.setImageBitmap(screen);
+                        mBgImageView.setScaleX(1.03f);
+                        mBgImageView.setScaleY(1.03f);
+                        // 硬件加速高斯模糊，比 RenderScript 更现代
+                        // radius 单位是像素，*2.5 是为了匹配原有 RenderScript 的视觉效果
+                        mBgImageView.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(
+                            BLUR_RADIUS * 2.5f, BLUR_RADIUS * 2.5f,
+                            android.graphics.Shader.TileMode.CLAMP));
+                        XposedBridge.log(TAG + "[DIAG] updateBackground: RenderEffect blur applied (API 31+)");
+                    }
+                    if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
+                } catch (Throwable t) {
+                    XposedBridge.log(TAG + "[DIAG] RenderEffect blur failed, fallback to RenderScript: " + t);
+                    if (mBgImageView != null) {
+                        Bitmap blurred = fastBlur(screen);
+                        if (blurred != null) {
+                            mBgImageView.setRenderEffect(null);
+                            mBgImageView.setImageBitmap(blurred);
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
+        // Android 8~11: 继续使用 RenderScript
         Bitmap blurred = fastBlur(screen);
         screen.recycle();
         if (blurred == null) {
             XposedBridge.log(TAG + "[DIAG] updateBackground: fastBlur returned null");
             return;
         }
-        XposedBridge.log(TAG + "[DIAG] updateBackground: blur done " + blurred.getWidth() + "x" + blurred.getHeight());
-        Bitmap oldBmp = mBlurredBgBitmap;
         mBlurredBgBitmap = blurred;
+        XposedBridge.log(TAG + "[DIAG] updateBackground: blur done " + blurred.getWidth() + "x" + blurred.getHeight());
         mHandler.post(() -> {
             try {
                 if (mBgImageView != null) {
@@ -1558,6 +1592,10 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         } else {
             XposedBridge.log(TAG + "[DIAG] removeOverlayImmediate: no overlay to remove");
+        }
+        // 清除 RenderEffect（Android 12+）
+        if (mBgImageView != null) {
+            try { mBgImageView.setRenderEffect(null); } catch (Throwable ignored) {}
         }
         Bitmap oldBitmap = mBlurredBgBitmap;
         mBlurredBgBitmap = null;
