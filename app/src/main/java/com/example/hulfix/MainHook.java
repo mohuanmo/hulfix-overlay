@@ -93,7 +93,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // 应用级别冷却：每个应用独立计时，防止同一应用通知轰炸，但不影响其他应用
     private static final java.util.Map<String, Long> mAppCooldownMap = new java.util.HashMap<>();
-    private static final long APP_COOLDOWN_MS = 1500;
+    private static final long APP_COOLDOWN_MS = 500;
 
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -302,6 +302,33 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": NotificationEntry constructors hooked");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": NotificationEntry hook skipped: " + t);
+        }
+
+        // === 兜底2：Hook NotificationEntry.updateNotification（通知内容更新时触发）===
+        try {
+            Class<?> entryClass2 = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.collection.NotificationEntry", lpparam.classLoader);
+            hookAllMethodsCompat(entryClass2, "updateNotification", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Object entry = param.thisObject;
+                        Object sbn = XposedHelpers.getObjectField(entry, "mSbn");
+                        if (sbn == null) {
+                            sbn = XposedHelpers.callMethod(entry, "getSbn");
+                        }
+                        if (sbn instanceof StatusBarNotification) {
+                            StatusBarNotification statusBarNotification = (StatusBarNotification) sbn;
+                            XposedBridge.log(TAG + ": NotificationEntry UPDATE triggered, pkg=" + statusBarNotification.getPackageName());
+                            processNotification(statusBarNotification);
+                        }
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + ": NotificationEntry update hook error: " + t);
+                    }
+                }
+            });
+            XposedBridge.log(TAG + ": NotificationEntry.updateNotification hooked");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": NotificationEntry.updateNotification hook skipped: " + t);
         }
     }
 
