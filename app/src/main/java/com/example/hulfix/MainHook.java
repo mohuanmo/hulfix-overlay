@@ -702,114 +702,136 @@ public class MainHook implements IXposedHookLoadPackage {
     private void startEnterAnimation(final View view) {
         XposedBridge.log(TAG + "[DIAG] startEnterAnimation called");
         cancelAllAnimations();
-        // 初始状态：完全看不见的圆点
+        // 初始状态：一个极小的凝聚点，像液体表面张力下的水珠
         view.setAlpha(0f);
         view.setTranslationX(0f);
         view.setTranslationY(0f);
-        view.setScaleX(0f);
-        view.setScaleY(0f);
+        view.setScaleX(0.05f);
+        view.setScaleY(0.05f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         // 内容层初始隐藏
-        if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0f); mIconView.setScaleY(0f); }
-        if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationX(-30f); }
-        if (mTextView != null) { mTextView.setAlpha(0f); }
+        if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0.4f); mIconView.setScaleY(0.4f); }
+        if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationY(12f); }
+        if (mTextView != null) { mTextView.setAlpha(0f); mTextView.setTranslationY(8f); }
         // 背景模糊初始隐藏
         if (mBgImageView != null) mBgImageView.setAlpha(0f);
-        // 圆角初始为圆形
+        // 圆角初始为完全圆形（水滴状）
         if (mGlassView != null) mGlassView.setCornerRadius(WIN_H * 0.5f);
 
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(420);
-        mEnterAnim.setInterpolator(new DecelerateInterpolator(1.2f));
+        mEnterAnim.setDuration(520);
+        mEnterAnim.setInterpolator(null); // 自定义分段曲线，不用统一插值器
         mEnterAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
             mEnterProgress = t;
 
-            // === 容器主体动画：4阶段，有回弹感但不夸张 ===
-            float containerAlpha, containerScale, cornerRadius;
-            if (t < 0.25f) {
-                // 阶段1：快速淡入+放大（0~105ms）
-                float p = t / 0.25f;
-                float ease = p * p;  // ease-in
-                containerAlpha = 0.3f + 0.7f * ease;   // 从 0.3 到 1.0
-                containerScale = 0.75f + 0.25f * ease; // 从 0.75 到 1.0
-                cornerRadius = 28f;
-            } else if (t < 0.55f) {
-                // 阶段2：overshoot 到 1.05（105~231ms）
-                float p = (t - 0.25f) / 0.30f;
+            // === Liquid Glass 弹出动画：凝聚 → 爆开 → 表面张力回弹 → 平静 ===
+            float containerAlpha, containerScale, cornerRadius, popGlow;
+
+            if (t < 0.15f) {
+                // 阶段1：凝聚（0~78ms）—— 液体聚集成水珠
+                float p = t / 0.15f;
+                float ease = p * p * (3f - 2f * p); // smoothstep
+                containerAlpha = 0.0f + 0.35f * ease;
+                containerScale = 0.05f + 0.55f * ease; // 0.05 → 0.60
+                cornerRadius = WIN_H * 0.5f; // 保持完全圆形
+                popGlow = 0f;
+            } else if (t < 0.45f) {
+                // 阶段2：爆开膨胀（78~234ms）—— 水滴落在玻璃上扩散
+                float p = (t - 0.15f) / 0.30f;
+                // spring-like overshoot: 快速冲过目标再回弹
+                float spring = (float)(1.0 - Math.exp(-5.0 * p) * Math.cos(8.0 * p));
+                containerAlpha = 0.35f + 0.60f * spring;
+                containerScale = 0.60f + 0.52f * spring; // 0.60 → 1.12 overshoot
+                cornerRadius = WIN_H * 0.5f * (1f - p * 0.85f); // 圆形逐渐变平
+                popGlow = (float)Math.sin(p * Math.PI) * 0.9f; // 光晕在膨胀时亮起
+            } else if (t < 0.75f) {
+                // 阶段3：表面张力回弹（234~390ms）—— 液体表面张力让玻璃稳定
+                float p = (t - 0.45f) / 0.30f;
                 float ease = p * p * (3f - 2f * p);
-                containerAlpha = 1f;
-                containerScale = 1.0f + 0.05f * ease; // 1.0 → 1.05
-                cornerRadius = 28f;
-            } else if (t < 0.8f) {
-                // 阶段3：轻微回弹到 0.98 再稳定（231~336ms）
-                float p = (t - 0.55f) / 0.25f;
-                float ease = p * p * (3f - 2f * p);
-                float bounce = (float) Math.sin(p * Math.PI) * 0.03f;
-                containerAlpha = 1f;
-                containerScale = 1.05f - 0.07f * ease + bounce; // 1.05 → 0.98 → 1.0
-                cornerRadius = 28f;
+                // 从 overshoot 回弹：1.12 → 0.94 → 1.04 → 1.0
+                float decay = (float)Math.exp(-3.0 * p);
+                float oscillation = (float)Math.cos(6.0 * p);
+                containerAlpha = 0.95f + 0.05f * ease;
+                containerScale = 1.04f + 0.08f * decay * oscillation - 0.04f * ease;
+                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * 0.15f * (1f - ease); // 接近最终圆角
+                popGlow = 0.9f * (1f - ease); // 光晕逐渐消散
             } else {
-                // 阶段4：稳定（336~420ms）
+                // 阶段4：平静定型（390~520ms）—— 完全稳定
+                float p = (t - 0.75f) / 0.25f;
+                float ease = p * p * (3f - 2f * p);
                 containerAlpha = 1f;
-                containerScale = 1f;
+                containerScale = 1.0f + 0.01f * (1f - ease); // 从 1.01 平滑到 1.0
                 cornerRadius = 28f;
+                popGlow = 0f;
             }
 
             view.setAlpha(containerAlpha);
             view.setScaleX(containerScale);
             view.setScaleY(containerScale);
-            if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
+            if (mGlassView != null) {
+                mGlassView.setCornerRadius(cornerRadius);
+                mGlassView.setPopGlow(popGlow);
+            }
 
-            // === 背景模糊淡入 ===
+            // === 背景模糊：从中心向外扩散 ===
             if (mBgImageView != null) {
                 float bgAlpha;
-                if (t < 0.2f) {
-                    bgAlpha = t * 3f;  // 快速淡入
+                if (t < 0.10f) {
+                    bgAlpha = t * 8f; // 快速启动
+                } else if (t < 0.40f) {
+                    float p = (t - 0.10f) / 0.30f;
+                    bgAlpha = 0.8f + 0.2f * (p * p * (3f - 2f * p));
                 } else {
-                    bgAlpha = Math.min(1f, 0.6f + (t - 0.2f) * 1.5f);
+                    bgAlpha = 1f;
                 }
-                mBgImageView.setAlpha(bgAlpha);
+                mBgImageView.setAlpha(Math.min(1f, bgAlpha));
             }
 
-            // === 内容 Stagger ===
-            // 图标：t=0.18 开始淡入
+            // === 内容分层浮现：像从玻璃内部浮出 ===
+            // 图标：t=0.18 开始，带弹性浮出
             if (mIconView != null && t > 0.18f) {
-                float ip = Math.min(1f, (t - 0.18f) / 0.22f);
+                float ip = Math.min(1f, (t - 0.18f) / 0.30f);
                 float iease = ip * ip * (3f - 2f * ip);
+                float ispring = (float)(1.0 - Math.exp(-4.0 * ip) * Math.cos(6.0 * ip));
                 mIconView.setAlpha(iease);
-                mIconView.setScaleX(0.7f + 0.3f * iease);
-                mIconView.setScaleY(0.7f + 0.3f * iease);
+                float iconScale = 0.4f + 0.6f * ispring;
+                mIconView.setScaleX(iconScale);
+                mIconView.setScaleY(iconScale);
             }
-            // 标题：t=0.28 开始淡入
-            if (mTitleView != null && t > 0.28f) {
-                float tp = Math.min(1f, (t - 0.28f) / 0.22f);
+            // 标题：t=0.32 开始，从下方滑入 + 淡入
+            if (mTitleView != null && t > 0.32f) {
+                float tp = Math.min(1f, (t - 0.32f) / 0.28f);
                 float tease = tp * tp * (3f - 2f * tp);
                 mTitleView.setAlpha(tease);
-                mTitleView.setTranslationX(-20f * (1f - tease));
+                mTitleView.setTranslationY(12f * (1f - tease));
             }
-            // 内容文字：t=0.38 开始淡入
-            if (mTextView != null && t > 0.38f) {
-                float cp = Math.min(1f, (t - 0.38f) / 0.20f);
+            // 文字：t=0.48 开始，淡入 + 轻微上浮
+            if (mTextView != null && t > 0.48f) {
+                float cp = Math.min(1f, (t - 0.48f) / 0.28f);
                 float cease = cp * cp * (3f - 2f * cp);
                 mTextView.setAlpha(cease);
+                mTextView.setTranslationY(8f * (1f - cease));
             }
         });
         mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
-                // 使用局部变量避免竞态：cancelAllAnimations 可能已经清空了 mEnterAnim
                 if (mEnterAnim != animation) return;
                 mEnterAnim = null;
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
                 view.setAlpha(1f);
                 view.setScaleX(1f);
                 view.setScaleY(1f);
+                view.setTranslationY(0f);
                 mEnterProgress = 1f;
                 if (mBgImageView != null) mBgImageView.setAlpha(1f);
                 if (mIconView != null) { mIconView.setAlpha(1f); mIconView.setScaleX(1f); mIconView.setScaleY(1f); }
-                if (mTitleView != null) { mTitleView.setAlpha(1f); mTitleView.setTranslationX(0f); }
-                if (mTextView != null) mTextView.setAlpha(1f);
-                if (mGlassView != null) mGlassView.setCornerRadius(28f);
+                if (mTitleView != null) { mTitleView.setAlpha(1f); mTitleView.setTranslationY(0f); }
+                if (mTextView != null) { mTextView.setAlpha(1f); mTextView.setTranslationY(0f); }
+                if (mGlassView != null) {
+                    mGlassView.setCornerRadius(28f);
+                    mGlassView.setPopGlow(0f);
+                }
             }
         });
         mEnterAnim.start();
@@ -1593,6 +1615,7 @@ public class MainHook implements IXposedHookLoadPackage {
         private float mTouchX = -1f;
         private float mTouchY = -1f;
         private float mTouchPressure = 0f;
+        private float mPopGlow = 0f;
 
         public LiquidGlassView(Context context, int w, int h, boolean isDark) {
             super(context);
@@ -1747,6 +1770,11 @@ public class MainHook implements IXposedHookLoadPackage {
             invalidate();
         }
 
+        public void setPopGlow(float glow) {
+            mPopGlow = Math.max(0f, Math.min(1f, glow));
+            invalidate();
+        }
+
         @Override
         protected void onDraw(Canvas canvas) {
             mClipPath.reset();
@@ -1773,14 +1801,18 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         private void drawEdgeHighlight(Canvas canvas) {
-            mEdgePaint.setAlpha((int)(80 * mBreathAlpha));
+            int baseAlpha = (int)(80 * mBreathAlpha);
+            int glowAlpha = (int)(180 * mPopGlow);
+            mEdgePaint.setAlpha(Math.min(255, baseAlpha + glowAlpha));
             float inset = 1f;
             RectF edgeRect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
             canvas.drawRoundRect(edgeRect, mCornerRadius - inset, mCornerRadius - inset, mEdgePaint);
         }
 
         private void drawShimmer(Canvas canvas) {
-            mShimmerPaint.setAlpha((int)(60 * mBreathAlpha));
+            int baseAlpha = (int)(60 * mBreathAlpha);
+            int glowAlpha = (int)(120 * mPopGlow);
+            mShimmerPaint.setAlpha(Math.min(255, baseAlpha + glowAlpha));
             canvas.drawRect(mDrawRect, mShimmerPaint);
         }
 
