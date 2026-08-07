@@ -529,26 +529,20 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=false (mStatusBar null)");
             return false;
         }
-        try {
-            boolean r = XposedHelpers.getBooleanField(mStatusBar, "mExpandedVisible");
-            XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + r + " (mExpandedVisible)");
-            return r;
-        } catch (Throwable t1) {
+        String[] fieldNames = {"mExpandedVisible", "mIsExpanded", "mPanelExpanded", "mPanelExpandedFraction", "mQsExpanded"};
+        for (String fieldName : fieldNames) {
             try {
-                boolean r = XposedHelpers.getBooleanField(mStatusBar, "mIsExpanded");
-                XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + r + " (mIsExpanded)");
+                Object val = XposedHelpers.getObjectField(mStatusBar, fieldName);
+                boolean r = false;
+                if (val instanceof Boolean) r = (Boolean) val;
+                else if (val instanceof Float) r = (Float) val > 0.05f;
+                else if (val instanceof Integer) r = (Integer) val > 0;
+                XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + r + " (" + fieldName + "=" + val + ")");
                 return r;
-            } catch (Throwable t2) {
-                try {
-                    boolean r = XposedHelpers.getBooleanField(mStatusBar, "mPanelExpanded");
-                    XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + r + " (mPanelExpanded)");
-                    return r;
-                } catch (Throwable ignored) {
-                    XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=false (all fields missing)");
-                    return false;
-                }
-            }
+            } catch (Throwable ignored) {}
         }
+        XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=false (all fields missing)");
+        return false;
     }
 
     private boolean isDarkMode() {
@@ -593,10 +587,25 @@ public class MainHook implements IXposedHookLoadPackage {
         try {
             Class<?> csClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.phone.CentralSurfacesImpl", lpparam.classLoader);
+            // 面板展开
             hookAllMethodsCompat(csClass, "expandNotificationsPanel", new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
                     mIsPanelExpanded = true;
                     triggerGlobalCooldown();
+                    XposedBridge.log(TAG + "[DIAG] Panel expanded via expandNotificationsPanel");
+                }
+            });
+            // 面板收起
+            hookAllMethodsCompat(csClass, "collapsePanels", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    mIsPanelExpanded = false;
+                    XposedBridge.log(TAG + "[DIAG] Panel collapsed via collapsePanels");
+                }
+            });
+            hookAllMethodsCompat(csClass, "animateCollapsePanels", new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    mIsPanelExpanded = false;
+                    XposedBridge.log(TAG + "[DIAG] Panel collapsed via animateCollapsePanels");
                 }
             });
             // 也 hook setExpandedFraction 如果存在
@@ -605,9 +614,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     float.class, new XC_MethodHook() {
                         @Override protected void beforeHookedMethod(MethodHookParam param) {
                             float fraction = (float) param.args[0];
-                            if (fraction > 0.05f) {
-                                mIsPanelExpanded = true;
+                            boolean wasExpanded = mIsPanelExpanded;
+                            mIsPanelExpanded = fraction > 0.05f;
+                            if (mIsPanelExpanded && !wasExpanded) {
                                 triggerGlobalCooldown();
+                                XposedBridge.log(TAG + "[DIAG] Panel expanded via setExpandedFraction, fraction=" + fraction);
+                            } else if (!mIsPanelExpanded && wasExpanded) {
+                                XposedBridge.log(TAG + "[DIAG] Panel collapsed via setExpandedFraction, fraction=" + fraction);
                             }
                         }
                     });
@@ -892,10 +905,18 @@ public class MainHook implements IXposedHookLoadPackage {
                 String newContent = title + "|" + content;
                 String newHash = Integer.toHexString(newContent.hashCode() & 0x7FFFFFFF);
 
-                if (key.equals(mCurrentKey) && mCurrentOverlay != null) {
-                    if (newHash.equals(mCurrentContentHash)) {
-                        XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: same content hash, skipping");
-                        return;
+                if (key.equals(mCurrentKey)) {
+                    if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
+                        if (newHash.equals(mCurrentContentHash)) {
+                            XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: same content hash, skipping");
+                            return;
+                        }
+                    } else {
+                        // overlay 已消失但状态未清空，强制重置
+                        XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: stale state detected, clearing");
+                        mCurrentKey = null;
+                        mCurrentContentHash = null;
+                        mCurrentOverlay = null;
                     }
                 }
                 XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: removing old overlay");
