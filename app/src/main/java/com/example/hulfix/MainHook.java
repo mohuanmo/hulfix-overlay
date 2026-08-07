@@ -201,13 +201,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 Class<?> clazz = XposedHelpers.findClass(className, lpparam.classLoader);
                 hookAllMethodsCompat(clazz, "addNotification", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        StatusBarNotification sbn = null;
-                        for (Object arg : param.args) {
-                            if (arg instanceof StatusBarNotification) {
-                                sbn = (StatusBarNotification) arg;
-                                break;
-                            }
-                        }
+                        StatusBarNotification sbn = extractSbnFromArgs(param.args);
                         if (sbn != null) processNotification(sbn);
                     }
                 });
@@ -221,6 +215,77 @@ public class MainHook implements IXposedHookLoadPackage {
         if (!hooked) {
             XposedBridge.log(TAG + ": hookNotificationEntry failed - no valid class found");
         }
+
+        // === 新增：Hook NotificationListener.onNotificationPosted（直接接收 StatusBarNotification）===
+        try {
+            Class<?> listenerClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.NotificationListener", lpparam.classLoader);
+            hookAllMethodsCompat(listenerClass, "onNotificationPosted", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    StatusBarNotification sbn = extractSbnFromArgs(param.args);
+                    if (sbn != null) {
+                        XposedBridge.log(TAG + ": onNotificationPosted triggered, pkg=" + sbn.getPackageName());
+                        processNotification(sbn);
+                    }
+                }
+            });
+            XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted hooked");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted hook skipped: " + t);
+        }
+
+        // === 新增：Hook NotifCollection.onNotificationPosted ===
+        try {
+            Class<?> notifCollClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.collection.NotifCollection", lpparam.classLoader);
+            hookAllMethodsCompat(notifCollClass, "onNotificationPosted", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    StatusBarNotification sbn = extractSbnFromArgs(param.args);
+                    if (sbn != null) {
+                        XposedBridge.log(TAG + ": NotifCollection.onNotificationPosted triggered, pkg=" + sbn.getPackageName());
+                        processNotification(sbn);
+                    }
+                }
+            });
+            XposedBridge.log(TAG + ": NotifCollection.onNotificationPosted hooked");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": NotifCollection.onNotificationPosted hook skipped: " + t);
+        }
+    }
+
+    private StatusBarNotification extractSbnFromArgs(Object[] args) {
+        // 1. 直接查找 StatusBarNotification 参数
+        for (Object arg : args) {
+            if (arg instanceof StatusBarNotification) {
+                return (StatusBarNotification) arg;
+            }
+        }
+        // 2. 从 NotificationEntry 反射获取 mSbn 或 getSbn()
+        for (Object arg : args) {
+            if (arg == null) continue;
+            try {
+                // 尝试 getSbn() 方法
+                Object result = XposedHelpers.callMethod(arg, "getSbn");
+                if (result instanceof StatusBarNotification) {
+                    return (StatusBarNotification) result;
+                }
+            } catch (Throwable ignored) {}
+            try {
+                // 尝试 mSbn 字段
+                Object result = XposedHelpers.getObjectField(arg, "mSbn");
+                if (result instanceof StatusBarNotification) {
+                    return (StatusBarNotification) result;
+                }
+            } catch (Throwable ignored) {}
+            try {
+                // 尝试 sbn 字段
+                Object result = XposedHelpers.getObjectField(arg, "sbn");
+                if (result instanceof StatusBarNotification) {
+                    return (StatusBarNotification) result;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return null;
     }
 
     private void processNotification(StatusBarNotification sbn) {
