@@ -151,6 +151,23 @@ public class MainHook implements IXposedHookLoadPackage {
         captureHeadsUpManager(lpparam);
         captureStatusBar(lpparam);
         hookNotificationEntry(lpparam);
+
+        // 获取 SystemUI 的 Context 和 WindowManager
+        try {
+            Class<?> appClass = XposedHelpers.findClass("android.app.Application", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(appClass, "attach", Context.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (mContext == null) {
+                        mContext = (Context) param.args[0];
+                        mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
+                        XposedBridge.log(TAG + ": Context and WindowManager initialized");
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": Failed to hook Application.attach: " + t);
+        }
     }
 
     private void captureHeadsUpManager(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -208,6 +225,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void processNotification(StatusBarNotification sbn) {
         try {
+            XposedBridge.log(TAG + ": processNotification called, pkg=" + (sbn != null ? sbn.getPackageName() : "null"));
             if (sbn == null) return;
             final String key = sbn.getKey();
             final Notification notification = sbn.getNotification();
