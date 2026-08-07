@@ -44,6 +44,8 @@ import android.graphics.SweepGradient;
 import android.graphics.RectF;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
+import android.view.ViewOutlineProvider;
+import android.graphics.Outline;
 import android.view.animation.LinearInterpolator;
 import android.view.animation.AccelerateDecelerateInterpolator;
 import java.util.Map;
@@ -990,7 +992,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 root.setOutlineProvider(new ViewOutlineProvider() {
                     @Override
                     public void getOutline(View view, Outline outline) {
-                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), cornerRadius);
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
                     }
                 });
                 root.setClipToOutline(true);
@@ -1562,5 +1564,268 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    // ============================================================  // 最小实现液态玻璃视图 —— 每个效果拆分为独立方法  // 原则：一个方法只做一件事，便于调试和替换  // ============================================================  private class LiquidGlassView extends View {      // ---- Paint 对象（构造时创建，onDraw 中只修改属性） ----      private final Paint mBasePaint;           // 半透明底色      private final Paint mReflectionPaint;     // 顶部白色反射条      private final Paint mEdgePaint;           // 边缘白色描边（简单可见）      private final Paint mShimmerPaint;        // 扫光效果（从左到右）      private final Paint mNoisePaint;          // 噪点纹理      private final Paint mBottomShadowPaint;   // 底部阴影      private final Paint mDentPaint;           // 触摸压痕      private final Paint mDentRimPaint;        // 触摸压痕边缘        // ---- Shader & Matrix（复用） ----      private final Bitmap mNoiseBitmap;        // 噪点纹理图      private final BitmapShader mNoiseShader;  // 噪点 Shader      private final Matrix mNoiseMatrix;        // 噪点位移矩阵      private final Matrix mShimmerMatrix;      // 扫光位移矩阵      private LinearGradient mShimmerGradient;  // 扫光渐变        // ---- 动画器 ----      private ValueAnimator mBreathAnimator;    // 整体呼吸透明度      private ValueAnimator mShimmerAnimator;   // 扫光从左到右移动      private ValueAnimator mNoiseAnimator;     // 噪点缓慢漂移        // ---- 动画状态值 ----      private float mBreathAlpha = 0.95f;       // 呼吸透明度      private float mShimmerOffset = 0f;        // 扫光位置 0-1      private float mNoiseOffset = 0f;          // 噪点偏移        // ---- 尺寸 & 主题 ----      private final int mViewWidth;      private final int mViewHeight;      private float mCornerRadius;      private final boolean mIsDark;      private final RectF mDrawRect;      private final android.graphics.Path mClipPath;        // ---- 触摸状态 ----      private float mTouchX = -1f;      private float mTouchY = -1f;      private float mTouchPressure = 0f;        public LiquidGlassView(Context context, int w, int h, boolean isDark) {          super(context);          mViewWidth = w;          mViewHeight = h;          mCornerRadius = 28f;          mIsDark = isDark;          mDrawRect = new RectF(0, 0, w, h);          mClipPath = new android.graphics.Path();            // 初始化所有 Paint（最小实现，每个方法独立）          mBasePaint = initBaseLayer(w, h, isDark);          mReflectionPaint = initReflection(h, isDark);          mEdgePaint = initEdgeHighlight(isDark);          mShimmerPaint = initShimmer(w, h);          mNoisePaint = initNoise();          mBottomShadowPaint = initBottomShadow(h, isDark);          mDentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);          mDentRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);          mDentRimPaint.setStyle(Paint.Style.STROKE);            // 初始化噪点纹理          mNoiseBitmap = createNoiseBitmap(128, 128);          mNoiseShader = new BitmapShader(mNoiseBitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);          mNoiseMatrix = new Matrix();          mNoisePaint.setShader(mNoiseShader);            // 初始化扫光矩阵          mShimmerMatrix = new Matrix();            startAnimations();      }        // ========== 最小方法 1：半透明底色 ==========      private Paint initBaseLayer(int w, int h, boolean isDark) {          Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);          // 简单半透明填充，不用复杂渐变          int baseColor = isDark ? 0x22000000 : 0x28FFFFFF;          paint.setColor(baseColor);          return paint;      }        // ========== 最小方法 2：顶部白色反射条 ==========      private Paint initReflection(int h, boolean isDark) {          Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);          // 顶部 1/3 区域的白色渐变，模拟玻璃反射          int white = isDark ? 0x40FFFFFF : 0x60FFFFFF;          LinearGradient grad = new LinearGradient(              0, 0, 0, h * 0.35f,              new int[]{white, 0x00FFFFFF},              new float[]{0f, 1f},              Shader.TileMode.CLAMP);          paint.setShader(grad);          paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));          return paint;      }        // ========== 最小方法 3：边缘白色描边（简单可见） ==========      private Paint initEdgeHighlight(boolean isDark) {          Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);          paint.setStyle(Paint.Style.STROKE);          paint.setStrokeWidth(1.5f);          // 简单白色描边，不用 SweepGradient（避免看不到）          paint.setColor(isDark ? 0x50FFFFFF : 0x70FFFFFF);          return paint;      }        // ========== 最小方法 4：扫光效果（从左到右，明显可见） ==========      private Paint initShimmer(int w, int h) {          Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);          // 一道明显的白色光带，从左到右扫过          mShimmerGradient = new LinearGradient(              0, 0, w * 0.4f, 0,  // 光带宽度为 40% 视图宽度              new int[]{0x00FFFFFF, 0x80FFFFFF, 0x00FFFFFF},              new float[]{0f, 0.5f, 1f},              Shader.TileMode.CLAMP);          paint.setShader(mShimmerGradient);          paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));          return paint;      }        // ========== 最小方法 5：噪点纹理 ==========      private Paint initNoise() {          Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);          paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));          return paint;      }        // ========== 最小方法 6：底部阴影 ==========      private Paint initBottomShadow(int h, boolean isDark) {          Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);          int shadowColor = isDark ? 0x30000000 : 0x18FFFFFF;          LinearGradient grad = new LinearGradient(              0, h * 0.5f, 0, h,              0x00000000, shadowColor, Shader.TileMode.CLAMP);          paint.setShader(grad);          return paint;      }        // ========== 创建噪点纹理 Bitmap ==========      private Bitmap createNoiseBitmap(int w, int h) {          Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);          Canvas c = new Canvas(bmp);          Paint p = new Paint();          java.util.Random r = new java.util.Random(12345);          // 随机小白点          for (int i = 0; i < 60; i++) {              float x = r.nextFloat() * w;              float y = r.nextFloat() * h;              float radius = 1f + r.nextFloat() * 3f;              int a = 15 + r.nextInt(40);              p.setColor(Color.argb(a, 255, 255, 255));              c.drawCircle(x, y, radius, p);          }          return bmp;      }        // ========== 启动动画 ==========      private void startAnimations() {          // 呼吸动画：整体透明度轻微变化          mBreathAnimator = ValueAnimator.ofFloat(0.90f, 0.98f);          mBreathAnimator.setDuration(3000);          mBreathAnimator.setRepeatCount(ValueAnimator.INFINITE);          mBreathAnimator.setRepeatMode(ValueAnimator.REVERSE);          mBreathAnimator.setInterpolator(new AccelerateDecelerateInterpolator());          mBreathAnimator.addUpdateListener(anim -> {              mBreathAlpha = (float) anim.getAnimatedValue();              invalidate();          });          mBreathAnimator.start();            // 扫光动画：从左到右移动，3秒一个循环          mShimmerAnimator = ValueAnimator.ofFloat(-0.5f, 1.5f);          mShimmerAnimator.setDuration(3000);          mShimmerAnimator.setRepeatCount(ValueAnimator.INFINITE);          mShimmerAnimator.setInterpolator(new LinearInterpolator());          mShimmerAnimator.addUpdateListener(anim -> {              mShimmerOffset = (float) anim.getAnimatedValue();              mShimmerMatrix.setTranslate(mShimmerOffset * mViewWidth, 0);              mShimmerGradient.setLocalMatrix(mShimmerMatrix);              invalidate();          });          mShimmerAnimator.start();            // 噪点漂移：缓慢移动          mNoiseAnimator = ValueAnimator.ofFloat(0f, 1f);          mNoiseAnimator.setDuration(4000);          mNoiseAnimator.setRepeatCount(ValueAnimator.INFINITE);          mNoiseAnimator.setInterpolator(new LinearInterpolator());          mNoiseAnimator.addUpdateListener(anim -> {              mNoiseOffset = (float) anim.getAnimatedValue();              mNoiseMatrix.setTranslate(mNoiseOffset * 256, 0);              mNoiseShader.setLocalMatrix(mNoiseMatrix);              invalidate();          });          mNoiseAnimator.start();      }        public void setCornerRadius(float radius) {          mCornerRadius = radius;          invalidate();      }        public void setTouchPoint(float x, float y, float pressure) {          mTouchX = x; mTouchY = y; mTouchPressure = pressure;          invalidate();      }        public void clearTouchPoint() {          mTouchX = -1f; mTouchY = -1f; mTouchPressure = 0f;          invalidate();      }        // ========== onDraw：按顺序调用每个最小方法 ==========      @Override      protected void onDraw(Canvas canvas) {          // Clip 到圆角区域（所有效果都在圆角内绘制）          mClipPath.reset();          mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);          canvas.clipPath(mClipPath);            // 1. 半透明底色          drawBaseLayer(canvas);            // 2. 顶部白色反射条          drawReflection(canvas);            // 3. 边缘白色描边（简单可见）          drawEdgeHighlight(canvas);            // 4. 扫光效果（从左到右）          drawShimmer(canvas);            // 5. 噪点纹理          drawNoise(canvas);            // 6. 底部阴影          drawBottomShadow(canvas);            // 7. 触摸压痕          drawTouchDent(canvas);      }        // ========== 最小绘制方法 1：半透明底色 ==========      private void drawBaseLayer(Canvas canvas) {          mBasePaint.setAlpha((int)(255 * mBreathAlpha));          canvas.drawRect(mDrawRect, mBasePaint);      }        // ========== 最小绘制方法 2：顶部白色反射条 ==========      private void drawReflection(Canvas canvas) {          mReflectionPaint.setAlpha((int)(100 * mBreathAlpha));          canvas.drawRect(mDrawRect, mReflectionPaint);      }        // ========== 最小绘制方法 3：边缘白色描边 ==========      private void drawEdgeHighlight(Canvas canvas) {          mEdgePaint.setAlpha((int)(80 * mBreathAlpha));          float inset = 1f;          RectF edgeRect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);          canvas.drawRoundRect(edgeRect, mCornerRadius - inset, mCornerRadius - inset, mEdgePaint);      }        // ========== 最小绘制方法 4：扫光效果 ==========      private void drawShimmer(Canvas canvas) {          mShimmerPaint.setAlpha((int)(60 * mBreathAlpha));          canvas.drawRect(mDrawRect, mShimmerPaint);      }        // ========== 最小绘制方法 5：噪点纹理 ==========      private void drawNoise(Canvas canvas) {          mNoisePaint.setAlpha((int)(40 * mBreathAlpha));          canvas.drawRect(mDrawRect, mNoisePaint);      }        // ========== 最小绘制方法 6：底部阴影 ==========      private void drawBottomShadow(Canvas canvas) {          mBottomShadowPaint.setAlpha((int)(120 * mBreathAlpha));          canvas.drawRect(mDrawRect, mBottomShadowPaint);      }        // ========== 最小绘制方法 7：触摸压痕 ==========      private void drawTouchDent(Canvas canvas) {          if (mTouchX >= 0 && mTouchPressure > 0.01f) {              float dentR = 35f * mTouchPressure;              mDentPaint.setColor(mIsDark ? 0x25000000 : 0x18FFFFFF);              canvas.drawCircle(mTouchX, mTouchY, dentR, mDentPaint);              mDentRimPaint.setColor(Color.argb((int)(50 * mTouchPressure), 255, 255, 255));              mDentRimPaint.setStrokeWidth(2f * mTouchPressure);              canvas.drawCircle(mTouchX, mTouchY, dentR, mDentRimPaint);          }      }        public void stopAnimations() {          if (mBreathAnimator != null) { mBreathAnimator.cancel(); mBreathAnimator = null; }          if (mShimmerAnimator != null) { mShimmerAnimator.cancel(); mShimmerAnimator = null; }          if (mNoiseAnimator != null) { mNoiseAnimator.cancel(); mNoiseAnimator = null; }      }        @Override      protected void onDetachedFromWindow() {          super.onDetachedFromWindow();          stopAnimations();          if (mNoiseBitmap != null && !mNoiseBitmap.isRecycled()) mNoiseBitmap.recycle();      }  }
+
+    // ============================================================
+    // 最小实现液态玻璃视图 —— 每个效果拆分为独立方法
+    // ============================================================
+    private class LiquidGlassView extends View {
+
+        private final Paint mBasePaint;
+        private final Paint mReflectionPaint;
+        private final Paint mEdgePaint;
+        private final Paint mShimmerPaint;
+        private final Paint mNoisePaint;
+        private final Paint mBottomShadowPaint;
+        private final Paint mDentPaint;
+        private final Paint mDentRimPaint;
+
+        private final Bitmap mNoiseBitmap;
+        private final BitmapShader mNoiseShader;
+        private final Matrix mNoiseMatrix;
+        private final Matrix mShimmerMatrix;
+        private LinearGradient mShimmerGradient;
+
+        private ValueAnimator mBreathAnimator;
+        private ValueAnimator mShimmerAnimator;
+        private ValueAnimator mNoiseAnimator;
+
+        private float mBreathAlpha = 0.95f;
+        private float mShimmerOffset = 0f;
+        private float mNoiseOffset = 0f;
+
+        private final int mViewWidth;
+        private final int mViewHeight;
+        private float mCornerRadius;
+        private final boolean mIsDark;
+        private final RectF mDrawRect;
+        private final android.graphics.Path mClipPath;
+
+        private float mTouchX = -1f;
+        private float mTouchY = -1f;
+        private float mTouchPressure = 0f;
+
+        public LiquidGlassView(Context context, int w, int h, boolean isDark) {
+            super(context);
+            mViewWidth = w;
+            mViewHeight = h;
+            mCornerRadius = 28f;
+            mIsDark = isDark;
+            mDrawRect = new RectF(0, 0, w, h);
+            mClipPath = new android.graphics.Path();
+
+            mBasePaint = initBaseLayer(w, h, isDark);
+            mReflectionPaint = initReflection(h, isDark);
+            mEdgePaint = initEdgeHighlight(isDark);
+            mShimmerPaint = initShimmer(w, h);
+            mNoisePaint = initNoise();
+            mBottomShadowPaint = initBottomShadow(h, isDark);
+            mDentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mDentRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mDentRimPaint.setStyle(Paint.Style.STROKE);
+
+            mNoiseBitmap = createNoiseBitmap(128, 128);
+            mNoiseShader = new BitmapShader(mNoiseBitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
+            mNoiseMatrix = new Matrix();
+            mNoisePaint.setShader(mNoiseShader);
+
+            mShimmerMatrix = new Matrix();
+
+            startAnimations();
+        }
+
+        private Paint initBaseLayer(int w, int h, boolean isDark) {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            int baseColor = isDark ? 0x22000000 : 0x28FFFFFF;
+            paint.setColor(baseColor);
+            return paint;
+        }
+
+        private Paint initReflection(int h, boolean isDark) {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            int white = isDark ? 0x40FFFFFF : 0x60FFFFFF;
+            LinearGradient grad = new LinearGradient(
+                0, 0, 0, h * 0.35f,
+                new int[]{white, 0x00FFFFFF},
+                new float[]{0f, 1f},
+                Shader.TileMode.CLAMP);
+            paint.setShader(grad);
+            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+            return paint;
+        }
+
+        private Paint initEdgeHighlight(boolean isDark) {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.5f);
+            paint.setColor(isDark ? 0x50FFFFFF : 0x70FFFFFF);
+            return paint;
+        }
+
+        private Paint initShimmer(int w, int h) {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mShimmerGradient = new LinearGradient(
+                0, 0, w * 0.4f, 0,
+                new int[]{0x00FFFFFF, 0x80FFFFFF, 0x00FFFFFF},
+                new float[]{0f, 0.5f, 1f},
+                Shader.TileMode.CLAMP);
+            paint.setShader(mShimmerGradient);
+            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+            return paint;
+        }
+
+        private Paint initNoise() {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+            return paint;
+        }
+
+        private Paint initBottomShadow(int h, boolean isDark) {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            int shadowColor = isDark ? 0x30000000 : 0x18FFFFFF;
+            LinearGradient grad = new LinearGradient(
+                0, h * 0.5f, 0, h,
+                0x00000000, shadowColor, Shader.TileMode.CLAMP);
+            paint.setShader(grad);
+            return paint;
+        }
+
+        private Bitmap createNoiseBitmap(int w, int h) {
+            Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(bmp);
+            Paint p = new Paint();
+            java.util.Random r = new java.util.Random(12345);
+            for (int i = 0; i < 60; i++) {
+                float x = r.nextFloat() * w;
+                float y = r.nextFloat() * h;
+                float radius = 1f + r.nextFloat() * 3f;
+                int a = 15 + r.nextInt(40);
+                p.setColor(Color.argb(a, 255, 255, 255));
+                c.drawCircle(x, y, radius, p);
+            }
+            return bmp;
+        }
+
+        private void startAnimations() {
+            mBreathAnimator = ValueAnimator.ofFloat(0.90f, 0.98f);
+            mBreathAnimator.setDuration(3000);
+            mBreathAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mBreathAnimator.setRepeatMode(ValueAnimator.REVERSE);
+            mBreathAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
+            mBreathAnimator.addUpdateListener(anim -> {
+                mBreathAlpha = (float) anim.getAnimatedValue();
+                invalidate();
+            });
+            mBreathAnimator.start();
+
+            mShimmerAnimator = ValueAnimator.ofFloat(-0.5f, 1.5f);
+            mShimmerAnimator.setDuration(3000);
+            mShimmerAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mShimmerAnimator.setInterpolator(new LinearInterpolator());
+            mShimmerAnimator.addUpdateListener(anim -> {
+                mShimmerOffset = (float) anim.getAnimatedValue();
+                mShimmerMatrix.setTranslate(mShimmerOffset * mViewWidth, 0);
+                mShimmerGradient.setLocalMatrix(mShimmerMatrix);
+                invalidate();
+            });
+            mShimmerAnimator.start();
+
+            mNoiseAnimator = ValueAnimator.ofFloat(0f, 1f);
+            mNoiseAnimator.setDuration(4000);
+            mNoiseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mNoiseAnimator.setInterpolator(new LinearInterpolator());
+            mNoiseAnimator.addUpdateListener(anim -> {
+                mNoiseOffset = (float) anim.getAnimatedValue();
+                mNoiseMatrix.setTranslate(mNoiseOffset * 256, 0);
+                mNoiseShader.setLocalMatrix(mNoiseMatrix);
+                invalidate();
+            });
+            mNoiseAnimator.start();
+        }
+
+        public void setCornerRadius(float radius) {
+            mCornerRadius = radius;
+            invalidate();
+        }
+
+        public void setTouchPoint(float x, float y, float pressure) {
+            mTouchX = x; mTouchY = y; mTouchPressure = pressure;
+            invalidate();
+        }
+
+        public void clearTouchPoint() {
+            mTouchX = -1f; mTouchY = -1f; mTouchPressure = 0f;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            mClipPath.reset();
+            mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
+            canvas.clipPath(mClipPath);
+
+            drawBaseLayer(canvas);
+            drawReflection(canvas);
+            drawEdgeHighlight(canvas);
+            drawShimmer(canvas);
+            drawNoise(canvas);
+            drawBottomShadow(canvas);
+            drawTouchDent(canvas);
+        }
+
+        private void drawBaseLayer(Canvas canvas) {
+            mBasePaint.setAlpha((int)(255 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mBasePaint);
+        }
+
+        private void drawReflection(Canvas canvas) {
+            mReflectionPaint.setAlpha((int)(100 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mReflectionPaint);
+        }
+
+        private void drawEdgeHighlight(Canvas canvas) {
+            mEdgePaint.setAlpha((int)(80 * mBreathAlpha));
+            float inset = 1f;
+            RectF edgeRect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
+            canvas.drawRoundRect(edgeRect, mCornerRadius - inset, mCornerRadius - inset, mEdgePaint);
+        }
+
+        private void drawShimmer(Canvas canvas) {
+            mShimmerPaint.setAlpha((int)(60 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mShimmerPaint);
+        }
+
+        private void drawNoise(Canvas canvas) {
+            mNoisePaint.setAlpha((int)(40 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mNoisePaint);
+        }
+
+        private void drawBottomShadow(Canvas canvas) {
+            mBottomShadowPaint.setAlpha((int)(120 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mBottomShadowPaint);
+        }
+
+        private void drawTouchDent(Canvas canvas) {
+            if (mTouchX >= 0 && mTouchPressure > 0.01f) {
+                float dentR = 35f * mTouchPressure;
+                mDentPaint.setColor(mIsDark ? 0x25000000 : 0x18FFFFFF);
+                canvas.drawCircle(mTouchX, mTouchY, dentR, mDentPaint);
+                mDentRimPaint.setColor(Color.argb((int)(50 * mTouchPressure), 255, 255, 255));
+                mDentRimPaint.setStrokeWidth(2f * mTouchPressure);
+                canvas.drawCircle(mTouchX, mTouchY, dentR, mDentRimPaint);
+            }
+        }
+
+        public void stopAnimations() {
+            if (mBreathAnimator != null) { mBreathAnimator.cancel(); mBreathAnimator = null; }
+            if (mShimmerAnimator != null) { mShimmerAnimator.cancel(); mShimmerAnimator = null; }
+            if (mNoiseAnimator != null) { mNoiseAnimator.cancel(); mNoiseAnimator = null; }
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            super.onDetachedFromWindow();
+            stopAnimations();
+            if (mNoiseBitmap != null && !mNoiseBitmap.isRecycled()) mNoiseBitmap.recycle();
+        }
+    }
 }
