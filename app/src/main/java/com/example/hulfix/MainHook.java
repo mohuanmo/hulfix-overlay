@@ -773,8 +773,13 @@ public class MainHook implements IXposedHookLoadPackage {
 
             // === 背景模糊淡入（膨胀到60%左右开始）===
             if (mBgImageView != null) {
-                float bgAlpha = 0.6f * ease;  // 背景更快显现
-                if (t > 0.25f) {
+                float bgAlpha;
+                if (t < 0.08f) {
+                    float p = t / 0.08f;
+                    bgAlpha = 0.6f * p * p;
+                } else if (t < 0.25f) {
+                    bgAlpha = 0.6f;
+                } else {
                     float bp = Math.min(1f, (t - 0.25f) / 0.35f);
                     bgAlpha = bp * bp * (3f - 2f * bp);
                 }
