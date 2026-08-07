@@ -272,6 +272,33 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": NotifCollection.onNotificationPosted hook skipped: " + t);
         }
+
+        // === 兜底：Hook NotificationEntry 构造方法（通知进入 SystemUI 的必经之路）===
+        try {
+            Class<?> entryClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.notification.collection.NotificationEntry", lpparam.classLoader);
+            hookAllConstructorsCompat(entryClass, new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        Object entry = param.thisObject;
+                        Object sbn = XposedHelpers.getObjectField(entry, "mSbn");
+                        if (sbn == null) {
+                            sbn = XposedHelpers.callMethod(entry, "getSbn");
+                        }
+                        if (sbn instanceof StatusBarNotification) {
+                            StatusBarNotification statusBarNotification = (StatusBarNotification) sbn;
+                            XposedBridge.log(TAG + ": NotificationEntry CONSTRUCTOR triggered, pkg=" + statusBarNotification.getPackageName());
+                            processNotification(statusBarNotification);
+                        }
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + ": NotificationEntry constructor hook error: " + t);
+                    }
+                }
+            });
+            XposedBridge.log(TAG + ": NotificationEntry constructors hooked");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": NotificationEntry hook skipped: " + t);
+        }
     }
 
     private StatusBarNotification extractSbnFromArgs(Object[] args) {
