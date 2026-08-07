@@ -86,10 +86,14 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private String mUserDismissedKey = null;
     private long mUserDismissTime = 0;
-    private static final long USER_IGNORE_COOLDOWN_MS = 2000;
+    private static final long USER_IGNORE_COOLDOWN_MS = 500;
 
     private long mGlobalCooldownTime = 0;
     private static final long GLOBAL_COOLDOWN_MS = 1000;
+
+    // 应用级别冷却：每个应用独立计时，防止同一应用通知轰炸，但不影响其他应用
+    private static final java.util.Map<String, Long> mAppCooldownMap = new java.util.HashMap<>();
+    private static final long APP_COOLDOWN_MS = 1500;
 
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -377,14 +381,18 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + "[DIAG] isFreshNotification=" + fresh);
             if (!fresh) return;
 
+            // 用户手动划掉后的冷却：只对完全相同的通知 key 生效
             boolean userIgnored = mUserDismissedKey != null && key.equals(mUserDismissedKey)
                 && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS;
             XposedBridge.log(TAG + "[DIAG] userIgnored=" + userIgnored);
             if (userIgnored) return;
 
-            boolean globalCooldown = isGlobalCooldown();
-            XposedBridge.log(TAG + "[DIAG] isGlobalCooldown=" + globalCooldown);
-            if (globalCooldown) return;
+            // 应用级别冷却：同一应用 1.5 秒内只显示一次，不影响其他应用
+            String pkg = sbn.getPackageName();
+            Long lastAppTime = mAppCooldownMap.get(pkg);
+            boolean appCooldown = lastAppTime != null && SystemClock.elapsedRealtime() - lastAppTime < APP_COOLDOWN_MS;
+            XposedBridge.log(TAG + "[DIAG] appCooldown=" + appCooldown + " for " + pkg);
+            if (appCooldown) return;
 
             boolean panelExpanded = isStatusBarExpanded();
             XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded=" + panelExpanded);
@@ -1099,6 +1107,9 @@ public class MainHook implements IXposedHookLoadPackage {
                 mCurrentOverlay = root;
                 XposedBridge.log(TAG + ": Shown: " + title);
                 XposedBridge.log(TAG + "[DIAG] Overlay shown successfully, key=" + key);
+
+                // 记录该应用的最后显示时间（应用级别冷却）
+                mAppCooldownMap.put(sbn.getPackageName(), SystemClock.elapsedRealtime());
 
                 // 首次截屏+模糊
                 updateBackground();
