@@ -2091,3 +2091,5 @@ public class MainHook implements IXposedHookLoadPackage {
             if (mMicroNoiseBitmap != null && !mMicroNoiseBitmap.isRecycled()) mMicroNoiseBitmap.recycle();
         }
     }
+
+} // MainHook
