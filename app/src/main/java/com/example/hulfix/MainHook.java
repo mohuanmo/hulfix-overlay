@@ -44,6 +44,8 @@ import android.graphics.SweepGradient;
 import android.graphics.RectF;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
 import android.view.ViewOutlineProvider;
 import android.graphics.Outline;
 import android.view.animation.LinearInterpolator;
@@ -122,6 +124,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private TextView mTitleView = null;
     private TextView mTextView = null;
     private ImageView mBgImageView = null;
+    private View mBgTintView = null;  // 径向渐变色调遮罩层（iOS 26 Liquid Glass 中心→边缘透明度渐变）
     private LiquidGlassView mGlassView = null;
     private Bitmap mBlurredBgBitmap = null;
     private Runnable mBgUpdateRunnable = null;
@@ -1016,6 +1019,42 @@ public class MainHook implements IXposedHookLoadPackage {
                 root.addView(bgView);
                 mBgImageView = bgView;
 
+                // === 第1.5层：径向渐变色调遮罩（iOS 26 Liquid Glass 中心→边缘透明度渐变）===
+                View tintView = new View(mContext) {
+                    private final Paint mTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    private RadialGradient mGradient;
+
+                    @Override
+                    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+                        super.onSizeChanged(w, h, oldw, oldh);
+                        // 中心更透明，边缘更实
+                        int centerAlpha = isDark ? 0x15 : 0x10;  // 中心：约 8-10% 不透明度
+                        int edgeAlpha = isDark ? 0x50 : 0x40;    // 边缘：约 25-31% 不透明度
+                        mGradient = new RadialGradient(
+                            w * 0.5f, h * 0.45f, Math.max(w, h) * 0.65f,
+                            new int[]{
+                                Color.argb(centerAlpha, 255, 255, 255),
+                                Color.argb((centerAlpha + edgeAlpha) / 2, 255, 255, 255),
+                                Color.argb(edgeAlpha, 255, 255, 255)
+                            },
+                            new float[]{0f, 0.6f, 1f},
+                            Shader.TileMode.CLAMP
+                        );
+                        mTintPaint.setShader(mGradient);
+                        mTintPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
+                    }
+
+                    @Override
+                    protected void onDraw(Canvas canvas) {
+                        if (mGradient != null) {
+                            canvas.drawRect(0, 0, getWidth(), getHeight(), mTintPaint);
+                        }
+                    }
+                };
+                tintView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                root.addView(tintView);
+                mBgTintView = tintView;
+
                 // === 第2层：液态玻璃效果层（Shader 动态渲染）===
                 LiquidGlassView glassOverlay = new LiquidGlassView(mContext, WIN_W, WIN_H, isDark);
                 glassOverlay.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
@@ -1483,12 +1522,40 @@ public class MainHook implements IXposedHookLoadPackage {
                         mBgImageView.setImageBitmap(screen);
                         mBgImageView.setScaleX(1.03f);
                         mBgImageView.setScaleY(1.03f);
-                        // 硬件加速高斯模糊，比 RenderScript 更现代
-                        // radius 单位是像素，*2.5 是为了匹配原有 RenderScript 的视觉效果
-                        mBgImageView.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(
-                            BLUR_RADIUS * 2.5f, BLUR_RADIUS * 2.5f,
-                            android.graphics.Shader.TileMode.CLAMP));
-                        XposedBridge.log(TAG + "[DIAG] updateBackground: RenderEffect blur applied (API 31+)");
+                        // === iOS 26 Liquid Glass: blur + colorMatrix 链式组合 ===
+                        // 步骤1: 创建 ColorMatrix（去饱和 + 暖色调 + 轻微暗化）
+                        ColorMatrix cm = new ColorMatrix();
+                        cm.setSaturation(0.65f); // 去饱和到 65%，模拟玻璃"冷却"效果
+
+                        // 微调 RGB 通道增加暖色调（边缘环境光渗入）
+                        float[] matrix = cm.getArray();
+                        matrix[0] *= 1.08f;   // R 增益（暖光）
+                        matrix[6] *= 0.96f;   // G 轻微降低
+                        matrix[12] *= 0.90f;  // B 降低（整体偏暖黄）
+                        // 轻微降低亮度，让玻璃感更强
+                        matrix[4] -= 0.04f;
+                        matrix[9] -= 0.04f;
+                        matrix[14] -= 0.04f;
+                        // 提高对比度，让暗部更深
+                        matrix[18] = 1.15f;   // Alpha 对比度（不影响 RGB）
+
+                        ColorMatrixColorFilter colorFilter = new ColorMatrixColorFilter(cm);
+
+                        // 步骤2: 链式组合 blur → colorMatrix
+                        // 内层：高斯模糊
+                        android.graphics.RenderEffect blurEffect = 
+                            android.graphics.RenderEffect.createBlurEffect(
+                                BLUR_RADIUS * 2.5f, BLUR_RADIUS * 2.5f,
+                                android.graphics.Shader.TileMode.CLAMP);
+                        // 外层：颜色矩阵色调
+                        android.graphics.RenderEffect colorEffect = 
+                            android.graphics.RenderEffect.createColorFilterEffect(colorFilter);
+                        // 链式：先 blur，再应用 colorMatrix
+                        android.graphics.RenderEffect chainEffect = 
+                            android.graphics.RenderEffect.createChainEffect(colorEffect, blurEffect);
+
+                        mBgImageView.setRenderEffect(chainEffect);
+                        XposedBridge.log(TAG + "[DIAG] updateBackground: RenderEffect blur+colorMatrix chain applied (API 31+)");
                     }
                     if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
                 } catch (Throwable t) {
@@ -1596,6 +1663,11 @@ public class MainHook implements IXposedHookLoadPackage {
         // 清除 RenderEffect（Android 12+）
         if (mBgImageView != null) {
             try { mBgImageView.setRenderEffect(null); } catch (Throwable ignored) {}
+        }
+        // 清除色调遮罩层
+        if (mBgTintView != null) {
+            try { mBgTintView.setAlpha(0f); } catch (Throwable ignored) {}
+            mBgTintView = null;
         }
         Bitmap oldBitmap = mBlurredBgBitmap;
         mBlurredBgBitmap = null;
