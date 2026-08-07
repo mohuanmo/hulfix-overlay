@@ -1538,40 +1538,69 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    // ============================================================
+    // 增强版液态玻璃视图 —— 光影动效重设计
+    // 替换 MainHook.java 中 1541-1802 行的 LiquidGlassView 类
+    // ============================================================
     private class LiquidGlassView extends View {
-        private final Paint mBasePaint;
-        private final Paint mHighlightPaint;
-        private final Paint mCausticPaint;
-        private final Paint mReflectionPaint;
-        private final Paint mShadowPaint;
-        private final Paint mInnerGlowPaint;
-        private final Paint mDentPaint;
-        private final Paint mDentRimPaint;
+        // ---- 基础 Paint（构造时创建，onDraw 中复用） ----
+        private final Paint mBasePaint;           // 体积渐变底色
+        private final Paint mNoisePaint;          // 噪点纹理（增强版）
+        private final Paint mReflectionPaint;     // 顶部反射光
+        private final Paint mShadowPaint;         // 底部阴影
+        private final Paint mInnerGlowPaint;      // 角落内发光
+        private final Paint mDentPaint;           // 触摸压痕
+        private final Paint mDentRimPaint;        // 触摸压痕边缘
 
-        // 复用的 Paint 对象，避免 onDraw 中频繁创建
-        private final Paint mOuterShadowPaint;
-        private final Paint mOuterGlowPaint;
+        // ---- 新增：光影动效 Paint ----
+        private final Paint mRimLightPaint;       // 菲涅尔边缘流光（SweepGradient）
+        private final Paint mSpecularPaint;       // 镜面扫光（LinearGradient）
+        private final Paint mCausticPaint;        // 环境焦散（增强版）
+        private final Paint mOuterShadowPaint;    // 外部阴影
+        private final Paint mOuterGlowPaint;      // 外部光晕（呼吸脉动）
+        private final Paint mVolumeLightPaint;    // 体积光（中心→边缘）
 
+        // ---- Shader & Matrix（复用，避免 GC） ----
         private final Bitmap mNoiseBitmap;
         private final BitmapShader mNoiseShader;
         private final Matrix mNoiseMatrix;
+        private final Matrix mRimMatrix;          // 边缘流光旋转矩阵
+        private final Matrix mSpecularMatrix;     // 扫光平移矩阵
+        private final Matrix mCausticMatrix;      // 焦散变换矩阵
+        private SweepGradient mRimGradient;       // 边缘流光渐变
+        private LinearGradient mSpecularGradient; // 镜面扫光渐变
+        private LinearGradient mCausticGradient;  // 焦散渐变
 
-        private ValueAnimator mFlowAnimator;
-        private ValueAnimator mCausticAnimator;
-        private ValueAnimator mBreathAnimator;
-        private ValueAnimator mInnerGlowAnimator;
+        // ---- 动画器 ----
+        private ValueAnimator mFlowAnimator;      // 噪点流动
+        private ValueAnimator mCausticAnimator;   // 焦散动画
+        private ValueAnimator mBreathAnimator;    // 呼吸透明度
+        private ValueAnimator mInnerGlowAnimator; // 内发光脉动
+        private ValueAnimator mRimLightAnimator;  // 【新增】边缘流光旋转
+        private ValueAnimator mSpecularAnimator;  // 【新增】镜面扫光平移
+        private ValueAnimator mGlowPulseAnimator; // 【新增】外发光呼吸
+        private ValueAnimator mCausticFlowAnimator; // 【新增】焦散流动
 
+        // ---- 动画状态值 ----
         private float mFlowOffset = 0f;
-        private float mCausticAngle = 0f;
+        private float mCausticPhase = 0f;
         private float mBreathAlpha = 0.95f;
         private float mInnerGlowIntensity = 0.3f;
+        private float mRimAngle = 0f;             // 【新增】边缘流光角度 0-360
+        private float mSpecularPos = 0f;          // 【新增】扫光位置 0-1
+        private float mGlowIntensity = 0.5f;      // 【新增】外发光强度
+        private float mCausticFlowOffset = 0f;    // 【新增】焦散流动偏移
+
+        // ---- 尺寸 & 主题 ----
         private final int mViewWidth;
         private final int mViewHeight;
         private float mCornerRadius;
         private final boolean mIsDark;
         private RectF mDrawRect;
         private final android.graphics.Path mClipPath;
+        private final android.graphics.Path mRimPath; // 边缘流光路径
 
+        // ---- 触摸状态 ----
         private float mTouchX = -1f;
         private float mTouchY = -1f;
         private float mTouchPressure = 0f;
@@ -1584,63 +1613,118 @@ public class MainHook implements IXposedHookLoadPackage {
             mIsDark = isDark;
             mDrawRect = new RectF(0, 0, w, h);
             mClipPath = new android.graphics.Path();
+            mRimPath = new android.graphics.Path();
 
-            int centerColor = isDark ? 0x22FFFFFF : 0x28FFFFFF;
-            int midColor = isDark ? 0x10FFFFFF : 0x15FFFFFF;
-            int edgeColor = isDark ? 0x08FFFFFF : 0x0AFFFFFF;
+            // ========== Layer 3: 基础体积渐变 ==========
+            int centerColor = isDark ? 0x28FFFFFF : 0x30FFFFFF;
+            int midColor = isDark ? 0x14FFFFFF : 0x1AFFFFFF;
+            int edgeColor = isDark ? 0x08FFFFFF : 0x0CFFFFFF;
             RadialGradient volumeGrad = new RadialGradient(
-                w * 0.5f, h * 0.4f, Math.max(w, h) * 0.8f,
+                w * 0.5f, h * 0.45f, Math.max(w, h) * 0.85f,
                 new int[]{centerColor, midColor, edgeColor, 0x00000000},
-                new float[]{0f, 0.35f, 0.7f, 1f},
+                new float[]{0f, 0.3f, 0.65f, 1f},
                 Shader.TileMode.CLAMP);
             mBasePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mBasePaint.setShader(volumeGrad);
 
+            // ========== Layer 4: 菲涅尔边缘流光（SweepGradient 旋转）==========
+            // 创建沿边缘旋转的白色高光
+            int rimWhite = isDark ? 0x88FFFFFF : 0xAAFFFFFF;
+            int rimFade = isDark ? 0x10FFFFFF : 0x18FFFFFF;
+            mRimGradient = new SweepGradient(
+                w * 0.5f, h * 0.5f,
+                new int[]{rimFade, rimWhite, rimFade, rimWhite, rimFade},
+                new float[]{0f, 0.15f, 0.5f, 0.85f, 1f});
+            mRimMatrix = new Matrix();
+            mRimLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mRimLightPaint.setShader(mRimGradient);
+            mRimLightPaint.setStyle(Paint.Style.STROKE);
+            mRimLightPaint.setStrokeWidth(3.5f);
+            mRimLightPaint.setMaskFilter(new android.graphics.BlurMaskFilter(5f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+
+            // ========== Layer 5: 镜面扫光（LinearGradient 平移）==========
+            // 斜向光泽带，模拟光源扫过
+            int specWhite = isDark ? 0x70FFFFFF : 0x90FFFFFF;
+            int specFade = 0x00FFFFFF;
+            mSpecularGradient = new LinearGradient(
+                0, 0, w * 0.6f, h * 0.4f,
+                new int[]{specFade, specWhite, specFade},
+                new float[]{0f, 0.5f, 1f},
+                Shader.TileMode.CLAMP);
+            mSpecularMatrix = new Matrix();
+            mSpecularPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mSpecularPaint.setShader(mSpecularGradient);
+            mSpecularPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+
+            // ========== Layer 7: 噪点纹理（增强 alpha）==========
             mNoiseBitmap = createNoiseBitmap(256, 256);
             mNoiseShader = new BitmapShader(mNoiseBitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
             mNoiseMatrix = new Matrix();
-            mHighlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mHighlightPaint.setShader(mNoiseShader);
-            mHighlightPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+            mNoisePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mNoisePaint.setShader(mNoiseShader);
+            mNoisePaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
 
-            mCausticPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mCausticPaint.setStyle(Paint.Style.STROKE);
-            mCausticPaint.setStrokeWidth(2.5f);
-            mCausticPaint.setMaskFilter(new android.graphics.BlurMaskFilter(4f, android.graphics.BlurMaskFilter.Blur.NORMAL));
-
-            int reflStart = isDark ? 0x45FFFFFF : 0x60FFFFFF;
-            int reflMid = isDark ? 0x20FFFFFF : 0x30FFFFFF;
+            // ========== Layer 6: 顶部反射光（增强）==========
+            int reflStart = isDark ? 0x55FFFFFF : 0x75FFFFFF;
+            int reflMid = isDark ? 0x28FFFFFF : 0x38FFFFFF;
             LinearGradient reflGrad = new LinearGradient(
-                0, 0, 0, h * 0.55f,
+                0, 0, 0, h * 0.5f,
                 new int[]{reflStart, reflMid, 0x00FFFFFF},
-                new float[]{0f, 0.2f, 1f},
+                new float[]{0f, 0.15f, 1f},
                 Shader.TileMode.CLAMP);
             mReflectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mReflectionPaint.setShader(reflGrad);
             mReflectionPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
 
-            int shadowEnd = isDark ? 0x30000000 : 0x18FFFFFF;
+            // ========== Layer 8: 环境焦散（增强版，流动路径）==========
+            mCausticGradient = new LinearGradient(
+                0, 0, w, 0,
+                new int[]{0x00FFFFFF, 0x40AADDFF, 0x00FFFFFF, 0x40FFCC88, 0x00FFFFFF},
+                new float[]{0f, 0.25f, 0.5f, 0.75f, 1f},
+                Shader.TileMode.REPEAT);
+            mCausticMatrix = new Matrix();
+            mCausticPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mCausticPaint.setShader(mCausticGradient);
+            mCausticPaint.setStyle(Paint.Style.STROKE);
+            mCausticPaint.setStrokeWidth(3f);
+            mCausticPaint.setMaskFilter(new android.graphics.BlurMaskFilter(6f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+
+            // ========== Layer 9: 内发光（增强）==========
+            mInnerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mInnerGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+
+            // ========== Layer 10: 底部阴影 ==========
+            int shadowEnd = isDark ? 0x35000000 : 0x20FFFFFF;
             LinearGradient shadowGrad = new LinearGradient(
-                0, h * 0.5f, 0, h,
+                0, h * 0.45f, 0, h,
                 0x00000000, shadowEnd, Shader.TileMode.CLAMP);
             mShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mShadowPaint.setShader(shadowGrad);
 
-            mInnerGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mInnerGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(10f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+            // ========== Layer 0: 外部阴影（增强）==========
+            mOuterShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mOuterShadowPaint.setColor(mIsDark ? 0x60000000 : 0x38FFFFFF);
+            mOuterShadowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(22f, android.graphics.BlurMaskFilter.Blur.NORMAL));
 
+            // ========== Layer 1: 外部光晕（呼吸脉动）==========
+            mOuterGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mOuterGlowPaint.setColor(mIsDark ? 0x20AADDFF : 0x15FFCC88);
+            mOuterGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(16f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+
+            // ========== 体积光（中心→边缘呼吸）==========
+            int volCenter = isDark ? 0x18FFFFFF : 0x20FFFFFF;
+            int volEdge = 0x00000000;
+            RadialGradient volGrad = new RadialGradient(
+                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.5f,
+                volCenter, volEdge, Shader.TileMode.CLAMP);
+            mVolumeLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mVolumeLightPaint.setShader(volGrad);
+            mVolumeLightPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+
+            // ========== 触摸压痕 ==========
             mDentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mDentRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mDentRimPaint.setStyle(Paint.Style.STROKE);
-
-            // 预创建 onDraw 中需要的 Paint，避免频繁 GC
-            mOuterShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mOuterShadowPaint.setColor(mIsDark ? 0x50000000 : 0x30FFFFFF);
-            mOuterShadowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(18f, android.graphics.BlurMaskFilter.Blur.NORMAL));
-
-            mOuterGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mOuterGlowPaint.setColor(mIsDark ? 0x18AADDFF : 0x10FFCC88);
-            mOuterGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.NORMAL));
 
             startAnimations();
         }
@@ -1655,35 +1739,49 @@ public class MainHook implements IXposedHookLoadPackage {
             Canvas c = new Canvas(bmp);
             Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
             java.util.Random r = new java.util.Random(12345);
-            for (int i = 0; i < 30; i++) {
+            // 大光斑（模拟玻璃表面的大反射）
+            for (int i = 0; i < 25; i++) {
                 float x = r.nextFloat() * w;
-                float y = r.nextFloat() * h * 0.4f;
-                float radius = 8f + r.nextFloat() * 20f;
-                int a = 12 + r.nextInt(30);
+                float y = r.nextFloat() * h * 0.35f;
+                float radius = 10f + r.nextFloat() * 28f;
+                int a = 18 + r.nextInt(35);
                 p.setColor(Color.argb(a, 255, 255, 255));
                 c.drawCircle(x, y, radius, p);
             }
-            for (int i = 0; i < 100; i++) {
+            // 中光斑
+            for (int i = 0; i < 80; i++) {
                 float x = r.nextFloat() * w;
                 float y = r.nextFloat() * h;
-                float radius = 1f + r.nextFloat() * 3f;
-                int a = 15 + r.nextInt(40);
+                float radius = 2f + r.nextFloat() * 5f;
+                int a = 20 + r.nextInt(50);
                 p.setColor(Color.argb(a, 255, 255, 255));
                 c.drawCircle(x, y, radius, p);
             }
-            for (int i = 0; i < 6; i++) {
-                float y = r.nextFloat() * h * 0.3f;
-                float bandH = 2f + r.nextFloat() * 5f;
-                int a = 8 + r.nextInt(15);
+            // 水平光带（模拟玻璃表面的拉丝纹理）
+            for (int i = 0; i < 8; i++) {
+                float y = r.nextFloat() * h * 0.25f;
+                float bandH = 1.5f + r.nextFloat() * 4f;
+                int a = 10 + r.nextInt(20);
                 p.setColor(Color.argb(a, 255, 255, 255));
                 c.drawRect(0, y, w, y + bandH, p);
+            }
+            // 斜向光带（增强动态感）
+            for (int i = 0; i < 5; i++) {
+                float startX = r.nextFloat() * w;
+                float startY = r.nextFloat() * h * 0.3f;
+                float len = 40f + r.nextFloat() * 100f;
+                int a = 8 + r.nextInt(15);
+                p.setColor(Color.argb(a, 255, 255, 255));
+                p.setStrokeWidth(1f + r.nextFloat() * 2f);
+                c.drawLine(startX, startY, startX + len * 0.7f, startY + len * 0.3f, p);
             }
             return bmp;
         }
 
         private void startAnimations() {
+            // ---- 噪点流动（3000ms） ----
             mFlowAnimator = ValueAnimator.ofFloat(0f, 1f);
-            mFlowAnimator.setDuration(2500);
+            mFlowAnimator.setDuration(3000);
             mFlowAnimator.setRepeatCount(ValueAnimator.INFINITE);
             mFlowAnimator.setInterpolator(new LinearInterpolator());
             mFlowAnimator.addUpdateListener(anim -> {
@@ -1694,20 +1792,45 @@ public class MainHook implements IXposedHookLoadPackage {
             });
             mFlowAnimator.start();
 
+            // ---- 焦散颜色变化（4000ms） ----
             mCausticAnimator = ValueAnimator.ofFloat(0f, 1f);
-            mCausticAnimator.setDuration(6000);
+            mCausticAnimator.setDuration(4000);
             mCausticAnimator.setRepeatCount(ValueAnimator.INFINITE);
             mCausticAnimator.setInterpolator(new LinearInterpolator());
             mCausticAnimator.addUpdateListener(anim -> {
-                mCausticAngle = (float) anim.getAnimatedValue();
-                float[] hsv = new float[]{200f + (float)(Math.sin(mCausticAngle * Math.PI * 2) * 25), 0.25f, 0.9f};
-                mCausticPaint.setColor(Color.HSVToColor(hsv));
+                mCausticPhase = (float) anim.getAnimatedValue();
+                float[] hsv = new float[]{
+                    190f + (float)(Math.sin(mCausticPhase * Math.PI * 2) * 30),
+                    0.3f, 0.95f
+                };
+                int causticColor = Color.HSVToColor(hsv);
+                // 更新焦散渐变的中间颜色
+                mCausticGradient = new LinearGradient(
+                    0, 0, mViewWidth, 0,
+                    new int[]{0x00FFFFFF, causticColor, 0x00FFFFFF, causticColor, 0x00FFFFFF},
+                    new float[]{0f, 0.25f, 0.5f, 0.75f, 1f},
+                    Shader.TileMode.REPEAT);
+                mCausticPaint.setShader(mCausticGradient);
                 invalidate();
             });
             mCausticAnimator.start();
 
-            mBreathAnimator = ValueAnimator.ofFloat(0.90f, 0.98f);
-            mBreathAnimator.setDuration(4000);
+            // ---- 焦散流动（2500ms） ----
+            mCausticFlowAnimator = ValueAnimator.ofFloat(0f, 1f);
+            mCausticFlowAnimator.setDuration(2500);
+            mCausticFlowAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mCausticFlowAnimator.setInterpolator(new LinearInterpolator());
+            mCausticFlowAnimator.addUpdateListener(anim -> {
+                mCausticFlowOffset = (float) anim.getAnimatedValue();
+                mCausticMatrix.setTranslate(mCausticFlowOffset * mViewWidth * 2, 0);
+                mCausticGradient.setLocalMatrix(mCausticMatrix);
+                invalidate();
+            });
+            mCausticFlowAnimator.start();
+
+            // ---- 呼吸透明度（3000ms） ----
+            mBreathAnimator = ValueAnimator.ofFloat(0.88f, 0.98f);
+            mBreathAnimator.setDuration(3000);
             mBreathAnimator.setRepeatCount(ValueAnimator.INFINITE);
             mBreathAnimator.setRepeatMode(ValueAnimator.REVERSE);
             mBreathAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
@@ -1717,8 +1840,9 @@ public class MainHook implements IXposedHookLoadPackage {
             });
             mBreathAnimator.start();
 
-            mInnerGlowAnimator = ValueAnimator.ofFloat(0.2f, 0.5f);
-            mInnerGlowAnimator.setDuration(3000);
+            // ---- 内发光脉动（2500ms） ----
+            mInnerGlowAnimator = ValueAnimator.ofFloat(0.25f, 0.6f);
+            mInnerGlowAnimator.setDuration(2500);
             mInnerGlowAnimator.setRepeatCount(ValueAnimator.INFINITE);
             mInnerGlowAnimator.setRepeatMode(ValueAnimator.REVERSE);
             mInnerGlowAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
@@ -1727,6 +1851,47 @@ public class MainHook implements IXposedHookLoadPackage {
                 invalidate();
             });
             mInnerGlowAnimator.start();
+
+            // ---- 【新增】边缘流光旋转（2000ms） ----
+            mRimLightAnimator = ValueAnimator.ofFloat(0f, 360f);
+            mRimLightAnimator.setDuration(2000);
+            mRimLightAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mRimLightAnimator.setInterpolator(new LinearInterpolator());
+            mRimLightAnimator.addUpdateListener(anim -> {
+                mRimAngle = (float) anim.getAnimatedValue();
+                mRimMatrix.setRotate(mRimAngle, mViewWidth * 0.5f, mViewHeight * 0.5f);
+                mRimGradient.setLocalMatrix(mRimMatrix);
+                invalidate();
+            });
+            mRimLightAnimator.start();
+
+            // ---- 【新增】镜面扫光平移（3500ms） ----
+            mSpecularAnimator = ValueAnimator.ofFloat(-1.5f, 2.5f);
+            mSpecularAnimator.setDuration(3500);
+            mSpecularAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mSpecularAnimator.setInterpolator(new LinearInterpolator());
+            mSpecularAnimator.addUpdateListener(anim -> {
+                mSpecularPos = (float) anim.getAnimatedValue();
+                // 斜向扫光：从左上到右下
+                float offsetX = mSpecularPos * mViewWidth * 0.8f;
+                float offsetY = mSpecularPos * mViewHeight * 0.5f;
+                mSpecularMatrix.setTranslate(offsetX, offsetY);
+                mSpecularGradient.setLocalMatrix(mSpecularMatrix);
+                invalidate();
+            });
+            mSpecularAnimator.start();
+
+            // ---- 【新增】外发光呼吸（2000ms） ----
+            mGlowPulseAnimator = ValueAnimator.ofFloat(0.3f, 0.7f);
+            mGlowPulseAnimator.setDuration(2000);
+            mGlowPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+            mGlowPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+            mGlowPulseAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
+            mGlowPulseAnimator.addUpdateListener(anim -> {
+                mGlowIntensity = (float) anim.getAnimatedValue();
+                invalidate();
+            });
+            mGlowPulseAnimator.start();
         }
 
         public void setTouchPoint(float x, float y, float pressure) {
@@ -1741,46 +1906,86 @@ public class MainHook implements IXposedHookLoadPackage {
 
         @Override
         protected void onDraw(Canvas canvas) {
-            // 外部阴影（在 clip 之前绘制，超出玻璃区域）
-            RectF shadowRect = new RectF(-6, 4, mViewWidth + 6, mViewHeight + 14);
+            // ========== Layer 0: 外部阴影（增强） ==========
+            RectF shadowRect = new RectF(-8, 5, mViewWidth + 8, mViewHeight + 18);
             canvas.drawRoundRect(shadowRect, mCornerRadius, mCornerRadius, mOuterShadowPaint);
 
-            // 第二层外发光（焦散感）
-            RectF glowRect = new RectF(-3, 2, mViewWidth + 3, mViewHeight + 8);
+            // ========== Layer 1: 外部光晕（呼吸脉动） ==========
+            mOuterGlowPaint.setAlpha((int)(mGlowIntensity * 255));
+            RectF glowRect = new RectF(-5, 3, mViewWidth + 5, mViewHeight + 10);
             canvas.drawRoundRect(glowRect, mCornerRadius, mCornerRadius, mOuterGlowPaint);
 
+            // ========== Clip 区域 ==========
             mClipPath.reset();
             mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
             canvas.clipPath(mClipPath);
 
+            // ========== Layer 3: 基础体积渐变 ==========
             canvas.drawRect(mDrawRect, mBasePaint);
 
-            mHighlightPaint.setAlpha((int)(35 * mBreathAlpha));
-            canvas.drawRect(mDrawRect, mHighlightPaint);
+            // ========== Layer 4: 菲涅尔边缘流光（SweepGradient 旋转） ==========
+            // 在内容层之上绘制旋转的边缘高光
+            mRimLightPaint.setAlpha((int)(70 * mBreathAlpha));
+            // 创建比 drawRect 稍小的内边距路径，让流光在边缘内侧
+            float rimInset = 2f;
+            RectF rimRect = new RectF(rimInset, rimInset, mViewWidth - rimInset, mViewHeight - rimInset);
+            mRimPath.reset();
+            mRimPath.addRoundRect(rimRect, mCornerRadius - rimInset, mCornerRadius - rimInset, android.graphics.Path.Direction.CW);
+            canvas.drawPath(mRimPath, mRimLightPaint);
 
+            // ========== Layer 5: 镜面扫光（LinearGradient 平移） ==========
+            // 模拟一道光源斜向扫过玻璃表面
+            mSpecularPaint.setAlpha((int)(45 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mSpecularPaint);
+
+            // ========== Layer 6: 顶部反射光（增强） ==========
+            mReflectionPaint.setAlpha((int)(85 * mBreathAlpha));
             canvas.drawRect(mDrawRect, mReflectionPaint);
 
-            mCausticPaint.setAlpha((int)(55 * mBreathAlpha));
-            RectF innerRect = new RectF(2, 2, mViewWidth - 2, mViewHeight - 2);
-            canvas.drawRoundRect(innerRect, mCornerRadius - 1, mCornerRadius - 1, mCausticPaint);
+            // ========== Layer 7: 噪点纹理（增强 alpha） ==========
+            // 从原来的 35 提升到 55，更明显
+            mNoisePaint.setAlpha((int)(55 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mNoisePaint);
 
+            // ========== Layer 8: 环境焦散（增强版，流动） ==========
+            mCausticPaint.setAlpha((int)(65 * mBreathAlpha));
+            float causticInset = 3f;
+            RectF causticRect = new RectF(causticInset, causticInset, mViewWidth - causticInset, mViewHeight - causticInset);
+            canvas.drawRoundRect(causticRect, mCornerRadius - causticInset, mCornerRadius - causticInset, mCausticPaint);
+
+            // ========== Layer 9: 内发光（增强） ==========
             int glowColor = mIsDark ?
-                Color.argb((int)(25 * mInnerGlowIntensity), 180, 210, 255) :
-                Color.argb((int)(20 * mInnerGlowIntensity), 200, 230, 255);
+                Color.argb((int)(35 * mInnerGlowIntensity), 180, 210, 255) :
+                Color.argb((int)(28 * mInnerGlowIntensity), 200, 230, 255);
             mInnerGlowPaint.setColor(glowColor);
-            float glowR = mCornerRadius * 1.8f;
+            float glowR = mCornerRadius * 2.2f;
+            // 四个角都有内发光
             canvas.drawCircle(mCornerRadius, mCornerRadius, glowR, mInnerGlowPaint);
             canvas.drawCircle(mViewWidth - mCornerRadius, mCornerRadius, glowR, mInnerGlowPaint);
+            canvas.drawCircle(mCornerRadius, mViewHeight - mCornerRadius, glowR * 0.6f, mInnerGlowPaint);
+            canvas.drawCircle(mViewWidth - mCornerRadius, mViewHeight - mCornerRadius, glowR * 0.6f, mInnerGlowPaint);
 
+            // ========== 体积光呼吸（中心→边缘） ==========
+            mVolumeLightPaint.setAlpha((int)(30 * mGlowIntensity));
+            canvas.drawRect(mDrawRect, mVolumeLightPaint);
+
+            // ========== Layer 10: 底部阴影 ==========
             canvas.drawRect(mDrawRect, mShadowPaint);
 
+            // ========== Layer 11: 触摸压痕 ==========
             if (mTouchX >= 0 && mTouchPressure > 0.01f) {
-                float dentR = 35f * mTouchPressure;
-                mDentPaint.setColor(mIsDark ? 0x25000000 : 0x18FFFFFF);
+                float dentR = 40f * mTouchPressure;
+                mDentPaint.setColor(mIsDark ? 0x30000000 : 0x20FFFFFF);
                 canvas.drawCircle(mTouchX, mTouchY, dentR, mDentPaint);
-                mDentRimPaint.setColor(Color.argb((int)(50 * mTouchPressure), 255, 255, 255));
-                mDentRimPaint.setStrokeWidth(2f * mTouchPressure);
+                mDentRimPaint.setColor(Color.argb((int)(60 * mTouchPressure), 255, 255, 255));
+                mDentRimPaint.setStrokeWidth(2.5f * mTouchPressure);
                 canvas.drawCircle(mTouchX, mTouchY, dentR, mDentRimPaint);
+
+                // 触摸点局部高光增强
+                Paint touchGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
+                touchGlow.setColor(Color.argb((int)(40 * mTouchPressure), 255, 255, 255));
+                touchGlow.setMaskFilter(new android.graphics.BlurMaskFilter(20f * mTouchPressure, android.graphics.BlurMaskFilter.Blur.NORMAL));
+                canvas.drawCircle(mTouchX, mTouchY, dentR * 2f, touchGlow);
             }
         }
 
@@ -1789,6 +1994,10 @@ public class MainHook implements IXposedHookLoadPackage {
             if (mCausticAnimator != null) { mCausticAnimator.cancel(); mCausticAnimator = null; }
             if (mBreathAnimator != null) { mBreathAnimator.cancel(); mBreathAnimator = null; }
             if (mInnerGlowAnimator != null) { mInnerGlowAnimator.cancel(); mInnerGlowAnimator = null; }
+            if (mRimLightAnimator != null) { mRimLightAnimator.cancel(); mRimLightAnimator = null; }
+            if (mSpecularAnimator != null) { mSpecularAnimator.cancel(); mSpecularAnimator = null; }
+            if (mGlowPulseAnimator != null) { mGlowPulseAnimator.cancel(); mGlowPulseAnimator = null; }
+            if (mCausticFlowAnimator != null) { mCausticFlowAnimator.cancel(); mCausticFlowAnimator = null; }
         }
 
         @Override
