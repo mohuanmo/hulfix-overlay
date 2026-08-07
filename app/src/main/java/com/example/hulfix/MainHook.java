@@ -2,6 +2,7 @@ package com.example.hulfix;
 
 import android.app.KeyguardManager;
 import android.app.Notification;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -45,7 +46,8 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
 import android.view.animation.LinearInterpolator;
 import android.view.animation.AccelerateDecelerateInterpolator;
-
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -69,7 +71,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float DIRECTION_LOCK_SLOP = 25f;
     private static final float MIN_FLING_VELOCITY = 200f;
     private static final float SWIPE_INTENT_THRESHOLD = 40f;
-    private static final float CLICK_THRESHOLD = 12f;
+    private static final float CLICK_THRESHOLD = 8f;
 
     private static final String BLOCK_PKG = "com.omarea.vtools";
     private static final int WINDOW_TYPE = 2017;
@@ -92,7 +94,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final long GLOBAL_COOLDOWN_MS = 1000;
 
     // 应用级别冷却：每个应用独立计时，防止同一应用通知轰炸，但不影响其他应用
-    private static final java.util.Map<String, Long> mAppCooldownMap = new java.util.HashMap<>();
+    private static final Map<String, Long> mAppCooldownMap = new ConcurrentHashMap<>();
     private static final long APP_COOLDOWN_MS = 500;
 
     private Object mHeadsUpManager = null;
@@ -124,6 +126,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float BLUR_RADIUS = 22f;
     private static final int BLUR_SCALE_FACTOR = 4;
 
+    private final Object mOverlayLock = new Object();
 
     private void hookAllMethodsCompat(Class<?> clazz, String methodName, XC_MethodHook callback) {
         Class<?> currentClass = clazz;
@@ -156,7 +159,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v26 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v27 loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
         hookPanelExpansion(lpparam);
         captureHeadsUpManager(lpparam);
@@ -408,13 +411,25 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + "[DIAG] isFreshNotification=" + fresh);
             if (!fresh) return;
 
+            // 全局冷却检查
+            if (isGlobalCooldown()) {
+                XposedBridge.log(TAG + "[DIAG] BLOCKED by global cooldown");
+                return;
+            }
+
+            // 勿扰模式检查
+            if (isDoNotDisturb()) {
+                XposedBridge.log(TAG + "[DIAG] BLOCKED by Do Not Disturb");
+                return;
+            }
+
             // 用户手动划掉后的冷却：只对完全相同的通知 key 生效
             boolean userIgnored = mUserDismissedKey != null && key.equals(mUserDismissedKey)
                 && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS;
             XposedBridge.log(TAG + "[DIAG] userIgnored=" + userIgnored);
             if (userIgnored) return;
 
-            // 应用级别冷却：同一应用 1.5 秒内只显示一次，不影响其他应用
+            // 应用级别冷却：同一应用 500ms 内只显示一次，不影响其他应用
             String pkg = sbn.getPackageName();
             Long lastAppTime = mAppCooldownMap.get(pkg);
             boolean appCooldown = lastAppTime != null && SystemClock.elapsedRealtime() - lastAppTime < APP_COOLDOWN_MS;
@@ -519,6 +534,20 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    private boolean isDoNotDisturb() {
+        if (mContext == null) return false;
+        try {
+            NotificationManager nm = (NotificationManager) mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm == null) return false;
+            int filter = nm.getCurrentInterruptionFilter();
+            // INTERRUPTION_FILTER_NONE = 3, INTERRUPTION_FILTER_ALARMS = 4
+            return filter == NotificationManager.INTERRUPTION_FILTER_NONE
+                || filter == NotificationManager.INTERRUPTION_FILTER_ALARMS;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private boolean isStatusBarExpanded() {
         XposedBridge.log(TAG + "[DIAG] isStatusBarExpanded: mIsPanelExpanded=" + mIsPanelExpanded + ", mStatusBar=" + (mStatusBar != null));
         if (mIsPanelExpanded) {
@@ -582,6 +611,15 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {}
     }
 
+    private void unregisterScreenReceiver() {
+        if (!mBroadcastRegistered || mContext == null || mScreenReceiver == null) return;
+        try {
+            mContext.unregisterReceiver(mScreenReceiver);
+        } catch (Throwable ignored) {}
+        mScreenReceiver = null;
+        mBroadcastRegistered = false;
+    }
+
     private void hookPanelExpansion(XC_LoadPackage.LoadPackageParam lpparam) {
         // LineageOS 20 GSI: 只保留 CentralSurfacesImpl 路径，其他类不存在
         try {
@@ -629,11 +667,6 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) { XposedBridge.log(TAG + ": hookPanelExpansion failed: " + t); }
     }
 
-
-
-
-
-
     private void cancelAllAnimations() {
         XposedBridge.log(TAG + "[DIAG] cancelAllAnimations called");
         ValueAnimator enter = mEnterAnim;
@@ -642,9 +675,18 @@ public class MainHook implements IXposedHookLoadPackage {
         mEnterAnim = null;
         mExitAnim = null;
         mBounceAnim = null;
-        if (enter != null) enter.cancel();
-        if (exit != null) exit.cancel();
-        if (bounce != null) bounce.cancel();
+        if (enter != null) {
+            enter.removeAllListeners();
+            enter.cancel();
+        }
+        if (exit != null) {
+            exit.removeAllListeners();
+            exit.cancel();
+        }
+        if (bounce != null) {
+            bounce.removeAllListeners();
+            bounce.cancel();
+        }
         if (mCurrentOverlay != null) {
             mCurrentOverlay.setAlpha(1f);
             mCurrentOverlay.setTranslationX(0f);
@@ -762,7 +804,8 @@ public class MainHook implements IXposedHookLoadPackage {
         });
         mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
-                if (mEnterAnim == null) return;
+                // 使用局部变量避免竞态：cancelAllAnimations 可能已经清空了 mEnterAnim
+                if (mEnterAnim != animation) return;
                 mEnterAnim = null;
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
                 view.setAlpha(1f);
@@ -837,7 +880,7 @@ public class MainHook implements IXposedHookLoadPackage {
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
-                if (mExitAnim == null) return;
+                if (mExitAnim != animation) return;
                 mExitAnim = null;
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
                 if (onEnd != null) onEnd.run();
@@ -864,7 +907,7 @@ public class MainHook implements IXposedHookLoadPackage {
         });
         mBounceAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
-                if (mBounceAnim == null) return;
+                if (mBounceAnim != animation) return;
                 mBounceAnim = null;
                 view.setTranslationX(0f);
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -897,31 +940,38 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: inside Handler post");
                 Bundle extras = notification.extras;
                 XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: extras=" + (extras != null));
-                String title = extras.getString(Notification.EXTRA_TITLE, "");
-                CharSequence text = extras.getCharSequence(Notification.EXTRA_TEXT, "");
-                CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "");
-                String content = (bigText != null && bigText.length() > 0) ? bigText.toString() : text.toString();
+                String title = extras != null ? extras.getString(Notification.EXTRA_TITLE, "") : "";
+                CharSequence text = extras != null ? extras.getCharSequence(Notification.EXTRA_TEXT, "") : "";
+                CharSequence bigText = extras != null ? extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "") : "";
+                String content = "";
+                if (bigText != null && bigText.length() > 0) {
+                    content = bigText.toString();
+                } else if (text != null) {
+                    content = text.toString();
+                }
                 XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: title=" + title + ", content=" + content);
                 String newContent = title + "|" + content;
                 String newHash = Integer.toHexString(newContent.hashCode() & 0x7FFFFFFF);
 
-                if (key.equals(mCurrentKey)) {
-                    if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
-                        if (newHash.equals(mCurrentContentHash)) {
-                            XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: same content hash, skipping");
-                            return;
+                synchronized (mOverlayLock) {
+                    if (key != null && key.equals(mCurrentKey)) {
+                        if (mCurrentOverlay != null && mCurrentOverlay.getParent() != null) {
+                            if (newHash.equals(mCurrentContentHash)) {
+                                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: same content hash, skipping");
+                                return;
+                            }
+                        } else {
+                            // overlay 已消失但状态未清空，强制重置
+                            XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: stale state detected, clearing");
+                            mCurrentKey = null;
+                            mCurrentContentHash = null;
+                            mCurrentOverlay = null;
                         }
-                    } else {
-                        // overlay 已消失但状态未清空，强制重置
-                        XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: stale state detected, clearing");
-                        mCurrentKey = null;
-                        mCurrentContentHash = null;
-                        mCurrentOverlay = null;
                     }
+                    XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: removing old overlay");
+                    removeOverlayImmediate();
+                    mCurrentContentHash = newHash;
                 }
-                XposedBridge.log(TAG + "[DIAG] showCustomHeadsUp: removing old overlay");
-                removeOverlayImmediate();
-                mCurrentContentHash = newHash;
 
                 boolean isDark = isDarkMode();
                 int glassBaseColor = isDark ? 0x18000000 : 0x1AFFFFFF;
@@ -998,14 +1048,19 @@ public class MainHook implements IXposedHookLoadPackage {
                     float startX, startY;
                     boolean lockedHorizontal = false;
                     boolean lockedVertical = false;
+                    boolean hasMoved = false;
 
                     @Override public boolean onTouch(View v, MotionEvent event) {
                         switch (event.getAction()) {
                             case MotionEvent.ACTION_DOWN:
                                 startX = event.getRawX(); startY = event.getRawY();
                                 lockedHorizontal = false; lockedVertical = false;
+                                hasMoved = false;
                                 mTouchMaxDx = 0f; mTouchMaxDy = 0f;
-                                if (mVelocityTracker != null) mVelocityTracker.recycle();
+                                if (mVelocityTracker != null) {
+                                    mVelocityTracker.recycle();
+                                    mVelocityTracker = null;
+                                }
                                 mVelocityTracker = android.view.VelocityTracker.obtain();
                                 mVelocityTracker.addMovement(event);
                                 v.animate().scaleX(0.97f).scaleY(0.97f)
@@ -1017,9 +1072,12 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float dy = event.getRawY() - startY;
                                 if (!lockedHorizontal && !lockedVertical) {
                                     if (Math.abs(dx) > DIRECTION_LOCK_SLOP || Math.abs(dy) > DIRECTION_LOCK_SLOP) {
+                                        hasMoved = true;
                                         if (Math.abs(dx) > Math.abs(dy)) lockedHorizontal = true;
                                         else lockedVertical = true;
                                     }
+                                } else {
+                                    hasMoved = true;
                                 }
                                 mTouchMaxDx = Math.max(mTouchMaxDx, Math.abs(dx));
                                 mTouchMaxDy = Math.max(mTouchMaxDy, Math.abs(dy));
@@ -1076,21 +1134,24 @@ public class MainHook implements IXposedHookLoadPackage {
                                 else if (lockedVertical) isHorizontal = false;
                                 else isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
 
-                                if (totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
+                                // 优先判断滑动销毁（需要方向锁定或明显移动）
+                                boolean significantMove = hasMoved || Math.abs(totalDx) > SWIPE_DESTROY_THRESHOLD || Math.abs(totalDy) > SWIPE_DESTROY_THRESHOLD;
+
+                                if (significantMove && totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
                                     if (mCurrentKey != null) {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
                                     }
                                     dismissOverlayAnimated(1); return true;
                                 }
-                                if (totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
+                                if (significantMove && totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     if (mCurrentKey != null) {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
                                     }
                                     dismissOverlayAnimated(0); return true;
                                 }
-                                if (totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
+                                if (significantMove && totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
                                     if (mCurrentKey != null) {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
@@ -1100,17 +1161,21 @@ public class MainHook implements IXposedHookLoadPackage {
                                 if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
                                     expandStatusBar(); removeOverlayImmediate(); return true;
                                 }
+
+                                // 点击判断：只有在没有明显移动时才判定为点击
+                                if (!hasMoved && Math.abs(totalDx) < CLICK_THRESHOLD && Math.abs(totalDy) < CLICK_THRESHOLD) {
+                                    performContentClick(contentIntent);
+                                    dismissOverlayAnimated(1);
+                                    return true;
+                                }
+
+                                // 有滑动意图但未达到阈值，回弹
                                 boolean hasSwipeIntent = (mTouchMaxDx > SWIPE_INTENT_THRESHOLD)
                                     || (mTouchMaxDy > SWIPE_INTENT_THRESHOLD);
                                 boolean isFastFling = (Math.abs(velocityX) > MIN_FLING_VELOCITY)
                                     || (Math.abs(velocityY) > MIN_FLING_VELOCITY);
                                 if (hasSwipeIntent || isFastFling) {
                                     startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
-                                    return true;
-                                }
-                                if (Math.abs(totalDx) < CLICK_THRESHOLD && Math.abs(totalDy) < CLICK_THRESHOLD) {
-                                    performContentClick(contentIntent);
-                                    dismissOverlayAnimated(1);
                                     return true;
                                 }
                                 startBounceAnimation(v, totalDx < 0 ? -1f : 1f);
@@ -1151,8 +1216,11 @@ public class MainHook implements IXposedHookLoadPackage {
                     XposedBridge.log(TAG + "[DIAG] addView exception: " + android.util.Log.getStackTraceString(e));
                     return;
                 }
-                mCurrentKey = key;
-                mCurrentOverlay = root;
+
+                synchronized (mOverlayLock) {
+                    mCurrentKey = key;
+                    mCurrentOverlay = root;
+                }
                 XposedBridge.log(TAG + ": Shown: " + title);
                 XposedBridge.log(TAG + "[DIAG] Overlay shown successfully, key=" + key);
 
@@ -1189,7 +1257,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 contentIntent.send(mContext, 0, null);
             }
         } catch (Throwable e) {
-            try { contentIntent.send(); } catch (Throwable ignored) {}
+            XposedBridge.log(TAG + "[DIAG] performContentClick primary failed: " + e);
+            try { contentIntent.send(mContext, 0, null); } catch (Throwable e2) {
+                XposedBridge.log(TAG + "[DIAG] performContentClick fallback failed: " + e2);
+            }
         }
     }
 
@@ -1222,10 +1293,11 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + "[DIAG] dismissOverlayAnimated: mHandler null");
             return;
         }
-        mHandler.post(() -> {
+        final Handler handler = mHandler;
+        handler.post(() -> {
             XposedBridge.log(TAG + "[DIAG] dismissOverlayAnimated: inside handler");
             if (mAutoDismissRunnable != null) {
-                mHandler.removeCallbacks(mAutoDismissRunnable);
+                handler.removeCallbacks(mAutoDismissRunnable);
                 mAutoDismissRunnable = null;
             }
             if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
@@ -1283,28 +1355,28 @@ public class MainHook implements IXposedHookLoadPackage {
     private Bitmap fastBlur(Bitmap input) {
         XposedBridge.log(TAG + "[DIAG] fastBlur called, input=" + (input != null ? input.getWidth() + "x" + input.getHeight() : "null"));
         if (input == null) return null;
+        android.renderscript.RenderScript rs = null;
+        android.renderscript.ScriptIntrinsicBlur blur = null;
+        android.renderscript.Allocation inputAlloc = null;
+        android.renderscript.Allocation outputAlloc = null;
+        Bitmap small = null;
+        Bitmap blurredSmall = null;
         try {
             int w = input.getWidth(), h = input.getHeight();
             int smallW = Math.max(1, w / BLUR_SCALE_FACTOR);
             int smallH = Math.max(1, h / BLUR_SCALE_FACTOR);
-            Bitmap small = Bitmap.createScaledBitmap(input, smallW, smallH, false);
-            android.renderscript.RenderScript rs = android.renderscript.RenderScript.create(mContext);
-            android.renderscript.Allocation inputAlloc = android.renderscript.Allocation.createFromBitmap(rs, small);
-            android.renderscript.Allocation outputAlloc = android.renderscript.Allocation.createTyped(rs, inputAlloc.getType());
-            android.renderscript.ScriptIntrinsicBlur blur = android.renderscript.ScriptIntrinsicBlur.create(
+            small = Bitmap.createScaledBitmap(input, smallW, smallH, false);
+            rs = android.renderscript.RenderScript.create(mContext);
+            inputAlloc = android.renderscript.Allocation.createFromBitmap(rs, small);
+            outputAlloc = android.renderscript.Allocation.createTyped(rs, inputAlloc.getType());
+            blur = android.renderscript.ScriptIntrinsicBlur.create(
                 rs, android.renderscript.Element.U8_4(rs));
             blur.setRadius(BLUR_RADIUS);
             blur.setInput(inputAlloc);
             blur.forEach(outputAlloc);
-            Bitmap blurredSmall = Bitmap.createBitmap(smallW, smallH, small.getConfig());
+            blurredSmall = Bitmap.createBitmap(smallW, smallH, small.getConfig());
             outputAlloc.copyTo(blurredSmall);
-            rs.destroy();
-            blur.destroy();
-            inputAlloc.destroy();
-            outputAlloc.destroy();
-            small.recycle();
             Bitmap result = Bitmap.createScaledBitmap(blurredSmall, w, h, true);
-            blurredSmall.recycle();
             // 叠加磨砂噪点
             try {
                 Canvas noiseCanvas = new Canvas(result);
@@ -1335,6 +1407,13 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + "[DIAG] fastBlur FAILED: " + t);
             XposedBridge.log(TAG + "[DIAG] fastBlur stack: " + android.util.Log.getStackTraceString(t));
             return input;
+        } finally {
+            if (blur != null) blur.destroy();
+            if (inputAlloc != null) inputAlloc.destroy();
+            if (outputAlloc != null) outputAlloc.destroy();
+            if (rs != null) rs.destroy();
+            if (small != null) small.recycle();
+            if (blurredSmall != null) blurredSmall.recycle();
         }
     }
 
@@ -1404,26 +1483,41 @@ public class MainHook implements IXposedHookLoadPackage {
             mHandler.removeCallbacks(mAutoDismissRunnable);
             mAutoDismissRunnable = null;
         }
-        String keyToRemove = mCurrentKey;
-        final View overlayToRemove = mCurrentOverlay;
+        // 注销 ScreenReceiver
+        unregisterScreenReceiver();
+
+        final View overlayToRemove;
+        synchronized (mOverlayLock) {
+            overlayToRemove = mCurrentOverlay;
+            mCurrentKey = null;
+            mCurrentRowView = null;
+            mCurrentOverlay = null;
+            mCurrentContentHash = null;
+        }
+
         if (overlayToRemove != null) {
             try {
                 overlayToRemove.setAlpha(0f);
-                if (mContentView != null) mContentView.setOnTouchListener(null);
-            } catch (Throwable ignored) {}
-            mHandler.postDelayed(() -> {
-                try {
-                    if (overlayToRemove.getParent() != null) {
-                        mWindowManager.removeView(overlayToRemove);
-                        XposedBridge.log(TAG + "[DIAG] removeView success");
-                    } else {
-                        XposedBridge.log(TAG + "[DIAG] removeView skipped - no parent");
-                    }
-                } catch (Throwable t) {
-                    XposedBridge.log(TAG + "[DIAG] removeView failed: " + t);
-                    try { mWindowManager.removeViewImmediate(overlayToRemove); } catch (Throwable ignored) {}
+                if (mContentView != null) {
+                    mContentView.setOnTouchListener(null);
                 }
-            }, 50);
+            } catch (Throwable ignored) {}
+            final WindowManager wm = mWindowManager;
+            if (wm != null) {
+                mHandler.post(() -> {
+                    try {
+                        if (overlayToRemove.getParent() != null) {
+                            wm.removeView(overlayToRemove);
+                            XposedBridge.log(TAG + "[DIAG] removeView success");
+                        } else {
+                            XposedBridge.log(TAG + "[DIAG] removeView skipped - no parent");
+                        }
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + "[DIAG] removeView failed: " + t);
+                        try { wm.removeViewImmediate(overlayToRemove); } catch (Throwable ignored) {}
+                    }
+                });
+            }
         } else {
             XposedBridge.log(TAG + "[DIAG] removeOverlayImmediate: no overlay to remove");
         }
@@ -1442,10 +1536,6 @@ public class MainHook implements IXposedHookLoadPackage {
             mGlassView.stopAnimations();
             mGlassView = null;
         }
-        mCurrentKey = null;
-        mCurrentRowView = null;
-        mCurrentOverlay = null;
-        mCurrentContentHash = null;
     }
 
     private class LiquidGlassView extends View {
@@ -1457,6 +1547,10 @@ public class MainHook implements IXposedHookLoadPackage {
         private final Paint mInnerGlowPaint;
         private final Paint mDentPaint;
         private final Paint mDentRimPaint;
+
+        // 复用的 Paint 对象，避免 onDraw 中频繁创建
+        private final Paint mOuterShadowPaint;
+        private final Paint mOuterGlowPaint;
 
         private final Bitmap mNoiseBitmap;
         private final BitmapShader mNoiseShader;
@@ -1538,6 +1632,15 @@ public class MainHook implements IXposedHookLoadPackage {
             mDentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mDentRimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mDentRimPaint.setStyle(Paint.Style.STROKE);
+
+            // 预创建 onDraw 中需要的 Paint，避免频繁 GC
+            mOuterShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mOuterShadowPaint.setColor(mIsDark ? 0x50000000 : 0x30FFFFFF);
+            mOuterShadowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(18f, android.graphics.BlurMaskFilter.Blur.NORMAL));
+
+            mOuterGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mOuterGlowPaint.setColor(mIsDark ? 0x18AADDFF : 0x10FFCC88);
+            mOuterGlowPaint.setMaskFilter(new android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.NORMAL));
 
             startAnimations();
         }
@@ -1639,18 +1742,12 @@ public class MainHook implements IXposedHookLoadPackage {
         @Override
         protected void onDraw(Canvas canvas) {
             // 外部阴影（在 clip 之前绘制，超出玻璃区域）
-            Paint outerShadow = new Paint(Paint.ANTI_ALIAS_FLAG);
-            outerShadow.setColor(mIsDark ? 0x50000000 : 0x30FFFFFF);
-            outerShadow.setMaskFilter(new android.graphics.BlurMaskFilter(18f, android.graphics.BlurMaskFilter.Blur.NORMAL));
             RectF shadowRect = new RectF(-6, 4, mViewWidth + 6, mViewHeight + 14);
-            canvas.drawRoundRect(shadowRect, mCornerRadius, mCornerRadius, outerShadow);
+            canvas.drawRoundRect(shadowRect, mCornerRadius, mCornerRadius, mOuterShadowPaint);
 
             // 第二层外发光（焦散感）
-            Paint outerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
-            outerGlow.setColor(mIsDark ? 0x18AADDFF : 0x10FFCC88);
-            outerGlow.setMaskFilter(new android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.NORMAL));
             RectF glowRect = new RectF(-3, 2, mViewWidth + 3, mViewHeight + 8);
-            canvas.drawRoundRect(glowRect, mCornerRadius, mCornerRadius, outerGlow);
+            canvas.drawRoundRect(glowRect, mCornerRadius, mCornerRadius, mOuterGlowPaint);
 
             mClipPath.reset();
             mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
@@ -1688,10 +1785,10 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         public void stopAnimations() {
-            if (mFlowAnimator != null) mFlowAnimator.cancel();
-            if (mCausticAnimator != null) mCausticAnimator.cancel();
-            if (mBreathAnimator != null) mBreathAnimator.cancel();
-            if (mInnerGlowAnimator != null) mInnerGlowAnimator.cancel();
+            if (mFlowAnimator != null) { mFlowAnimator.cancel(); mFlowAnimator = null; }
+            if (mCausticAnimator != null) { mCausticAnimator.cancel(); mCausticAnimator = null; }
+            if (mBreathAnimator != null) { mBreathAnimator.cancel(); mBreathAnimator = null; }
+            if (mInnerGlowAnimator != null) { mInnerGlowAnimator.cancel(); mInnerGlowAnimator = null; }
         }
 
         @Override
