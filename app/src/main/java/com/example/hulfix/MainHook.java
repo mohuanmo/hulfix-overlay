@@ -122,6 +122,28 @@ public class MainHook implements IXposedHookLoadPackage {
 
 
     @Override
+    private void hookAllMethodsCompat(Class<?> clazz, String methodName, XC_MethodHook callback) {
+        for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
+            if (method.getName().equals(methodName)) {
+                try {
+                    XposedBridge.hookMethod(method, callback);
+                } catch (Throwable t) {
+                    XposedBridge.log(TAG + ": hookMethod failed for " + methodName + ": " + t);
+                }
+            }
+        }
+    }
+
+    private void hookAllConstructorsCompat(Class<?> clazz, XC_MethodHook callback) {
+        for (java.lang.reflect.Constructor<?> constructor : clazz.getDeclaredConstructors()) {
+            try {
+                XposedBridge.hookMethod(constructor, callback);
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": hookConstructor failed: " + t);
+            }
+        }
+    }
+
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
         XposedBridge.log(TAG + ": ====== HULFix Overlay v26 loaded ======");
@@ -136,7 +158,7 @@ public class MainHook implements IXposedHookLoadPackage {
         try {
             Class<?> headsUpClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.policy.HeadsUpManager", lpparam.classLoader);
-            XposedBridge.hookAllMethods(headsUpClass, "addNotification",
+            hookAllMethodsCompat(headsUpClass, "addNotification",
                 new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         mHeadsUpManager = param.thisObject;
@@ -149,36 +171,39 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void hookNotificationEntry(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> entryManagerClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.notification.NotificationEntryManager", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(entryManagerClass, "addNotification",
-                StatusBarNotification.class, XposedHelpers.findClass("android.service.notification.NotificationListenerService$RankingMap", lpparam.classLoader),
-                new XC_MethodHook() {
+        // 尝试多个可能的通知入口类（LineageOS 20 GSI 类结构可能不同）
+        String[] classNames = {
+            "com.android.systemui.statusbar.notification.NotificationEntryManager",
+            "com.android.systemui.statusbar.notification.NotifPipeline",
+            "com.android.systemui.statusbar.notification.collection.NotifCollection",
+            "com.android.systemui.statusbar.notification.NotificationListener",
+            "com.android.systemui.statusbar.phone.CentralSurfacesImpl"
+        };
+        boolean hooked = false;
+        for (String className : classNames) {
+            try {
+                Class<?> clazz = XposedHelpers.findClass(className, lpparam.classLoader);
+                hookAllMethodsCompat(clazz, "addNotification", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        StatusBarNotification sbn = (StatusBarNotification) param.args[0];
-                        if (sbn == null) return;
-                        processNotification(sbn);
+                        StatusBarNotification sbn = null;
+                        for (Object arg : param.args) {
+                            if (arg instanceof StatusBarNotification) {
+                                sbn = (StatusBarNotification) arg;
+                                break;
+                            }
+                        }
+                        if (sbn != null) processNotification(sbn);
                     }
                 });
-            XposedBridge.log(TAG + ": NotificationEntryManager.addNotification hooked");
-        } catch (Throwable t1) {
-            try {
-                Class<?> statusBarClass = XposedHelpers.findClass(
-                    "com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
-                XposedHelpers.findAndHookMethod(statusBarClass, "addNotification",
-                    String.class, StatusBarNotification.class,
-                    new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            StatusBarNotification sbn = (StatusBarNotification) param.args[1];
-                            if (sbn == null) return;
-                            processNotification(sbn);
-                        }
-                    });
-                XposedBridge.log(TAG + ": StatusBar.addNotification hooked (fallback)");
-            } catch (Throwable t2) {
-                XposedBridge.log(TAG + ": hookNotificationEntry failed: " + t2);
+                XposedBridge.log(TAG + ": " + className + ".addNotification hooked");
+                hooked = true;
+                break;
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": " + className + " not found or hook failed: " + t);
             }
+        }
+        if (!hooked) {
+            XposedBridge.log(TAG + ": hookNotificationEntry failed - no valid class found");
         }
     }
 
@@ -205,33 +230,34 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void captureStatusBar(XC_LoadPackage.LoadPackageParam lpparam) {
+        // LineageOS 20 GSI 使用 CentralSurfacesImpl 替代 StatusBar
         try {
-            Class<?> statusBarClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.StatusBar", lpparam.classLoader);
-            XposedBridge.hookAllConstructors(statusBarClass, new XC_MethodHook() {
+            Class<?> csClass = XposedHelpers.findClass(
+                "com.android.systemui.statusbar.phone.CentralSurfacesImpl", lpparam.classLoader);
+            hookAllConstructorsCompat(csClass, new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
                     mStatusBar = param.thisObject;
-                    XposedBridge.log(TAG + ": StatusBar captured via constructor");
+                    XposedBridge.log(TAG + ": CentralSurfacesImpl captured via constructor");
                 }
             });
-            XposedHelpers.findAndHookMethod(statusBarClass, "start", new XC_MethodHook() {
+            XposedHelpers.findAndHookMethod(csClass, "start", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
                     if (mStatusBar == null) {
                         mStatusBar = param.thisObject;
-                        XposedBridge.log(TAG + ": StatusBar captured via start()");
+                        XposedBridge.log(TAG + ": CentralSurfacesImpl captured via start()");
                     }
                 }
             });
-            XposedBridge.hookAllMethods(statusBarClass, "addNotification", new XC_MethodHook() {
+            hookAllMethodsCompat(csClass, "addNotification", new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam param) {
                     if (mStatusBar == null) {
                         mStatusBar = param.thisObject;
-                        XposedBridge.log(TAG + ": StatusBar captured via addNotification");
+                        XposedBridge.log(TAG + ": CentralSurfacesImpl captured via addNotification");
                     }
                 }
             });
             try {
-                XposedHelpers.findAndHookMethod(statusBarClass, "expandNotificationsPanel", new XC_MethodHook() {
+                XposedHelpers.findAndHookMethod(csClass, "expandNotificationsPanel", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         mIsPanelExpanded = true;
                         triggerGlobalCooldown();
@@ -239,7 +265,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook expandNotificationsPanel skipped: " + t); }
             try {
-                XposedHelpers.findAndHookMethod(statusBarClass, "setExpandedVisible", boolean.class, new XC_MethodHook() {
+                XposedHelpers.findAndHookMethod(csClass, "setExpandedVisible", boolean.class, new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         boolean visible = (boolean) param.args[0];
                         mIsPanelExpanded = visible;
@@ -248,37 +274,16 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook setExpandedVisible skipped: " + t); }
             try {
-                XposedHelpers.findAndHookMethod(statusBarClass, "makeExpandedVisible", new XC_MethodHook() {
+                XposedHelpers.findAndHookMethod(csClass, "makeExpandedVisible", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
                         mIsPanelExpanded = true;
                         triggerGlobalCooldown();
                     }
                 });
             } catch (Throwable t) { XposedBridge.log(TAG + ": hook makeExpandedVisible skipped: " + t); }
-            try {
-                Class<?> panelControllerClass = XposedHelpers.findClass(
-                    "com.android.systemui.statusbar.phone.PanelViewController", lpparam.classLoader);
-                XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStarted", new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        mIsPanelExpanded = true;
-                        triggerGlobalCooldown();
-                    }
-                });
-                XposedBridge.hookAllMethods(panelControllerClass, "onTrackingStopped", new XC_MethodHook() {
-                    @Override protected void afterHookedMethod(MethodHookParam param) {
-                        if (mStatusBar != null) {
-                            try {
-                                mIsPanelExpanded = XposedHelpers.getBooleanField(mStatusBar, "mExpandedVisible");
-                            } catch (Throwable t) {
-                                mIsPanelExpanded = false;
-                            }
-                        }
-                    }
-                });
-            } catch (Throwable t) { XposedBridge.log(TAG + ": hook PanelViewController skipped: " + t); }
-
+            XposedBridge.log(TAG + ": CentralSurfacesImpl hooks applied");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": StatusBar hooks failed: " + t);
+            XposedBridge.log(TAG + ": CentralSurfacesImpl hooks failed: " + t);
         }
     }
 
@@ -340,151 +345,31 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void hookPanelExpansion(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 路径1: NotificationPanelViewController.onPanelExpansionChanged (Android 13 最常用)
-        try {
-            Class<?> npvcClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.NotificationPanelViewController", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(npvcClass, "onPanelExpansionChanged",
-                float.class, boolean.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        float fraction = (float) param.args[0];
-                        if (fraction > 0.05f) {
-                            mIsPanelExpanded = true;
-                            triggerGlobalCooldown();
-                        }
-                    }
-                });
-            XposedBridge.log(TAG + ": NotificationPanelViewController.onPanelExpansionChanged hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook onPanelExpansionChanged skipped: " + t); }
-
-        // 路径2: PanelView.setExpandedFraction
-        try {
-            Class<?> panelViewClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.PanelView", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(panelViewClass, "setExpandedFraction",
-                float.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        float fraction = (float) param.args[0];
-                        if (fraction > 0.05f) {
-                            mIsPanelExpanded = true;
-                            triggerGlobalCooldown();
-                        }
-                    }
-                });
-            XposedBridge.log(TAG + ": PanelView.setExpandedFraction hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook setExpandedFraction skipped: " + t); }
-
-        // 路径3: PanelView.setExpandedHeight
-        try {
-            Class<?> panelViewClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.PanelView", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(panelViewClass, "setExpandedHeight",
-                float.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        float height = (float) param.args[0];
-                        if (height > 10f) {
-                            mIsPanelExpanded = true;
-                            triggerGlobalCooldown();
-                        }
-                    }
-                });
-            XposedBridge.log(TAG + ": PanelView.setExpandedHeight hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook setExpandedHeight skipped: " + t); }
-
-        // 路径4: ShadeController / ShadeControllerImpl.expandNotificationShade
-        try {
-            Class<?> shadeClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.ShadeControllerImpl", lpparam.classLoader);
-            XposedBridge.hookAllMethods(shadeClass, "expandNotificationShade", new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    mIsPanelExpanded = true;
-                    triggerGlobalCooldown();
-                }
-            });
-            XposedBridge.log(TAG + ": ShadeControllerImpl.expandNotificationShade hooked");
-        } catch (Throwable t) {
-            try {
-                Class<?> shadeClass2 = XposedHelpers.findClass(
-                    "com.android.systemui.statusbar.phone.ShadeController", lpparam.classLoader);
-                XposedBridge.hookAllMethods(shadeClass2, "expandNotificationShade", new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        mIsPanelExpanded = true;
-                        triggerGlobalCooldown();
-                    }
-                });
-                XposedBridge.log(TAG + ": ShadeController.expandNotificationShade hooked");
-            } catch (Throwable t2) { XposedBridge.log(TAG + ": hook expandNotificationShade skipped: " + t2); }
-        }
-
-        // 路径5: CentralSurfacesImpl.expandNotificationsPanel (Android 13 新架构)
+        // LineageOS 20 GSI: 只保留 CentralSurfacesImpl 路径，其他类不存在
         try {
             Class<?> csClass = XposedHelpers.findClass(
                 "com.android.systemui.statusbar.phone.CentralSurfacesImpl", lpparam.classLoader);
-            XposedBridge.hookAllMethods(csClass, "expandNotificationsPanel", new XC_MethodHook() {
+            hookAllMethodsCompat(csClass, "expandNotificationsPanel", new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
                     mIsPanelExpanded = true;
                     triggerGlobalCooldown();
                 }
             });
-            XposedBridge.log(TAG + ": CentralSurfacesImpl.expandNotificationsPanel hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook CentralSurfacesImpl skipped: " + t); }
-
-        // 路径6: NotificationPanelView.onTouchEvent (从顶部直接下滑)
-        try {
-            Class<?> npvClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.NotificationPanelView", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(npvClass, "onTouchEvent",
-                MotionEvent.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        MotionEvent ev = (MotionEvent) param.args[0];
-                        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
-                            if (ev.getY() < 80f) {
+            // 也 hook setExpandedFraction 如果存在
+            try {
+                XposedHelpers.findAndHookMethod(csClass, "setExpandedFraction",
+                    float.class, new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam param) {
+                            float fraction = (float) param.args[0];
+                            if (fraction > 0.05f) {
                                 mIsPanelExpanded = true;
                                 triggerGlobalCooldown();
                             }
                         }
-                    }
-                });
-            XposedBridge.log(TAG + ": NotificationPanelView.onTouchEvent hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook NotificationPanelView.onTouchEvent skipped: " + t); }
-
-        // 路径7: PanelView.onTouchEvent (通用面板触摸)
-        try {
-            Class<?> pvClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.PanelView", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(pvClass, "onTouchEvent",
-                MotionEvent.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        MotionEvent ev = (MotionEvent) param.args[0];
-                        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
-                            if (ev.getY() < 80f) {
-                                mIsPanelExpanded = true;
-                                triggerGlobalCooldown();
-                            }
-                        }
-                    }
-                });
-            XposedBridge.log(TAG + ": PanelView.onTouchEvent hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook PanelView.onTouchEvent skipped: " + t); }
-
-        // 路径8: StatusBarWindowView.onTouchEvent (状态栏窗口触摸)
-        try {
-            Class<?> sbwvClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.StatusBarWindowView", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(sbwvClass, "onTouchEvent",
-                MotionEvent.class, new XC_MethodHook() {
-                    @Override protected void beforeHookedMethod(MethodHookParam param) {
-                        MotionEvent ev = (MotionEvent) param.args[0];
-                        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
-                            if (ev.getY() < 80f) {
-                                mIsPanelExpanded = true;
-                                triggerGlobalCooldown();
-                            }
-                        }
-                    }
-                });
-            XposedBridge.log(TAG + ": StatusBarWindowView.onTouchEvent hooked");
-        } catch (Throwable t) { XposedBridge.log(TAG + ": hook StatusBarWindowView.onTouchEvent skipped: " + t); }
+                    });
+            } catch (Throwable ignored) {}
+            XposedBridge.log(TAG + ": CentralSurfacesImpl panel hooks applied");
+        } catch (Throwable t) { XposedBridge.log(TAG + ": hookPanelExpansion failed: " + t); }
     }
 
 
