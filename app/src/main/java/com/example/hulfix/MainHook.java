@@ -121,7 +121,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final int BLUR_SCALE_FACTOR = 4;
 
 
-    @Override
     private void hookAllMethodsCompat(Class<?> clazz, String methodName, XC_MethodHook callback) {
         for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
             if (method.getName().equals(methodName)) {
