@@ -122,15 +122,22 @@ public class MainHook implements IXposedHookLoadPackage {
 
 
     private void hookAllMethodsCompat(Class<?> clazz, String methodName, XC_MethodHook callback) {
-        for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
-            if (method.getName().equals(methodName)) {
-                try {
-                    XposedBridge.hookMethod(method, callback);
-                } catch (Throwable t) {
-                    XposedBridge.log(TAG + ": hookMethod failed for " + methodName + ": " + t);
+        Class<?> currentClass = clazz;
+        int hookedCount = 0;
+        while (currentClass != null) {
+            for (java.lang.reflect.Method method : currentClass.getDeclaredMethods()) {
+                if (method.getName().equals(methodName)) {
+                    try {
+                        XposedBridge.hookMethod(method, callback);
+                        hookedCount++;
+                    } catch (Throwable t) {
+                        XposedBridge.log(TAG + ": hookMethod failed for " + methodName + " in " + currentClass.getName() + ": " + t);
+                    }
                 }
             }
+            currentClass = currentClass.getSuperclass();
         }
+        XposedBridge.log(TAG + ": hookAllMethodsCompat '" + methodName + "' hooked " + hookedCount + " method(s) in class hierarchy");
     }
 
     private void hookAllConstructorsCompat(Class<?> clazz, XC_MethodHook callback) {
@@ -224,14 +231,29 @@ public class MainHook implements IXposedHookLoadPackage {
                 @Override protected void beforeHookedMethod(MethodHookParam param) {
                     StatusBarNotification sbn = extractSbnFromArgs(param.args);
                     if (sbn != null) {
-                        XposedBridge.log(TAG + ": onNotificationPosted triggered, pkg=" + sbn.getPackageName());
+                        XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted triggered, pkg=" + sbn.getPackageName());
                         processNotification(sbn);
                     }
                 }
             });
-            XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted hooked");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": NotificationListener.onNotificationPosted hook skipped: " + t);
+        }
+        // === 同时 Hook 父类 NotificationListenerService 的 onNotificationPosted ===
+        try {
+            Class<?> nlsClass = XposedHelpers.findClass(
+                "android.service.notification.NotificationListenerService", lpparam.classLoader);
+            hookAllMethodsCompat(nlsClass, "onNotificationPosted", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    StatusBarNotification sbn = extractSbnFromArgs(param.args);
+                    if (sbn != null) {
+                        XposedBridge.log(TAG + ": NotificationListenerService.onNotificationPosted triggered, pkg=" + sbn.getPackageName());
+                        processNotification(sbn);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": NotificationListenerService.onNotificationPosted hook skipped: " + t);
         }
 
         // === 新增：Hook NotifCollection.onNotificationPosted ===
@@ -247,7 +269,6 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 }
             });
-            XposedBridge.log(TAG + ": NotifCollection.onNotificationPosted hooked");
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": NotifCollection.onNotificationPosted hook skipped: " + t);
         }
