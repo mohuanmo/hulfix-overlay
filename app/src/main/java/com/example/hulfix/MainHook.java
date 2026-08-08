@@ -865,6 +865,58 @@ public class MainHook implements IXposedHookLoadPackage {
                 FrameLayout root = new FrameLayout(mContext);
                 root.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
 
+                // === Liquid Glass 背景层 ===
+                // 使用渐变模拟玻璃厚度与折射感：顶部亮 → 中部透 → 底部略暗
+                android.graphics.drawable.GradientDrawable glassBg = new android.graphics.drawable.GradientDrawable();
+                glassBg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+                glassBg.setCornerRadius(28f);
+                int[] glassColors = isDark
+                    ? new int[]{0xD91C1C1E, 0xC01C1C1E, 0xA61C1C1E}   // 深色：深灰蓝，上亮下暗
+                    : new int[]{0xB3FFFFFF, 0x99FFFFFF, 0x80FFFFFF};  // 浅色：白，上亮下透
+                glassBg.setColors(glassColors);
+                glassBg.setOrientation(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM);
+                View glassLayer = new View(mContext);
+                glassLayer.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                glassLayer.setBackground(glassBg);
+                root.addView(glassLayer);
+
+                // === 顶部高光（模拟玻璃表面反光）===
+                View highlightTop = new View(mContext);
+                FrameLayout.LayoutParams hTopLp = new FrameLayout.LayoutParams(WIN_W, 2);
+                hTopLp.gravity = Gravity.TOP;
+                hTopLp.topMargin = 0;
+                highlightTop.setLayoutParams(hTopLp);
+                android.graphics.drawable.GradientDrawable highlightDrawable = new android.graphics.drawable.GradientDrawable();
+                highlightDrawable.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+                highlightDrawable.setCornerRadii(new float[]{28f,28f,28f,28f,0,0,0,0});
+                highlightDrawable.setColors(new int[]{0x40FFFFFF, 0x00FFFFFF});
+                highlightDrawable.setOrientation(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM);
+                highlightTop.setBackground(highlightDrawable);
+                root.addView(highlightTop);
+
+                // === 底部阴影（模拟玻璃厚度与体积）===
+                View shadowBottom = new View(mContext);
+                FrameLayout.LayoutParams sBotLp = new FrameLayout.LayoutParams(WIN_W, 3);
+                sBotLp.gravity = Gravity.BOTTOM;
+                shadowBottom.setLayoutParams(sBotLp);
+                android.graphics.drawable.GradientDrawable shadowDrawable = new android.graphics.drawable.GradientDrawable();
+                shadowDrawable.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+                shadowDrawable.setCornerRadii(new float[]{0,0,0,0,28f,28f,28f,28f});
+                shadowDrawable.setColors(new int[]{0x00000000, isDark ? 0x50000000 : 0x20000000});
+                shadowDrawable.setOrientation(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM);
+                shadowBottom.setBackground(shadowDrawable);
+                root.addView(shadowBottom);
+
+                // === 边缘内发光（微妙的高光环）===
+                View edgeGlow = new View(mContext);
+                edgeGlow.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                android.graphics.drawable.GradientDrawable edgeDrawable = new android.graphics.drawable.GradientDrawable();
+                edgeDrawable.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+                edgeDrawable.setCornerRadius(28f);
+                edgeDrawable.setStroke(1, isDark ? 0x18FFFFFF : 0x20FFFFFF);
+                edgeGlow.setBackground(edgeDrawable);
+                root.addView(edgeGlow);
+
                 // === 内容容器（可移动）===
                 LinearLayout contentContainer = new LinearLayout(mContext);
                 contentContainer.setOrientation(LinearLayout.HORIZONTAL);
@@ -910,6 +962,15 @@ public class MainHook implements IXposedHookLoadPackage {
                 mIconView = iconView;
                 mTitleView = titleView;
                 mTextView = contentView;
+
+                // === 圆角裁剪（确保所有层统一圆角）===
+                root.setClipToOutline(true);
+                root.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
+                    }
+                });
 
                 // === 触摸事件处理（角度判定方向 + 严格方向锁定）===
                 contentContainer.setOnTouchListener(new View.OnTouchListener() {
@@ -1070,7 +1131,8 @@ public class MainHook implements IXposedHookLoadPackage {
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                        | WindowManager.LayoutParams.FLAG_BLUR_BEHIND,
                     PixelFormat.TRANSLUCENT);
                 params.gravity = Gravity.TOP | Gravity.LEFT;
                 params.x = WIN_X;
