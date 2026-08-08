@@ -995,6 +995,9 @@ public class MainHook implements IXposedHookLoadPackage {
 
                 root.addView(contentContainer);
                 mContentView = contentContainer;
+                mIconView = iconView;
+                mTitleView = titleView;
+                mTextView = contentView;
 
                 // === 触摸事件处理（角度判定方向 + 严格方向锁定）===
                 contentContainer.setOnTouchListener(new View.OnTouchListener() {
@@ -1048,7 +1051,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mTouchMaxDy = Math.max(mTouchMaxDy, Math.abs(dy));
                                 if (mVelocityTracker != null) mVelocityTracker.addMovement(event);
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
-                                v.setAlpha(Math.max(0.5f, 1f - dist / 300f));
+                                // Touch feedback on root overlay, not contentContainer
+                                if (mCurrentOverlay != null) {
+                                    mCurrentOverlay.setAlpha(Math.max(0.5f, 1f - dist / 300f));
+                                }
                                 // === 严格方向锁定移动 ===
                                 // 水平锁定：只移动 X 轴，Y 轴固定为 0
                                 // 垂直锁定：只移动 Y 轴，X 轴固定为 0
@@ -1398,18 +1404,10 @@ public class MainHook implements IXposedHookLoadPackage {
                         android.graphics.RenderEffect chainEffect =
                             android.graphics.RenderEffect.createChainEffect(colorEffect, blurEffect);
 
-                        // 应用 RenderEffect 到临时 ImageView，然后截图传给 LiquidGlassView
-                        android.widget.ImageView tempView = new android.widget.ImageView(mContext);
-                        tempView.setImageBitmap(screen);
-                        tempView.setRenderEffect(chainEffect);
-                        tempView.measure(
-                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_W, android.view.View.MeasureSpec.EXACTLY),
-                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_H, android.view.View.MeasureSpec.EXACTLY));
-                        tempView.layout(0, 0, WIN_W, WIN_H);
-                        Bitmap effectBmp = Bitmap.createBitmap(WIN_W, WIN_H, Bitmap.Config.ARGB_8888);
-                        Canvas effectCanvas = new Canvas(effectBmp);
-                        tempView.draw(effectCanvas);
-                        mGlassView.setBackgroundBitmap(effectBmp);
+                        // Apply RenderEffect directly to LiquidGlassView
+                        // No need for temporary ImageView - RenderEffect works on the View itself
+                        mGlassView.setRenderEffect(chainEffect);
+                        mGlassView.setBackgroundBitmap(screen);
                     }
                     if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
                 } catch (Throwable t) {
@@ -1554,6 +1552,12 @@ public class MainHook implements IXposedHookLoadPackage {
         private final boolean mIsDark;
         private final RectF mDrawRect;
 
+        // === Reusable draw objects (avoid allocation in onDraw) ===
+        private final android.graphics.Path mClipPath = new android.graphics.Path();
+        private final RectF mInnerRect = new RectF();
+        private final RectF mTopRect = new RectF();
+        private Paint mInnerBlurPaint = null;
+
         // === 背景模糊位图 ===
         private Bitmap mBgBitmap = null;
         private BitmapShader mBgShader = null;
@@ -1611,7 +1615,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 Shader.TileMode.CLAMP);
             paint.setShader(grad);
             // 添加模糊效果，增加磨砂玻璃质感
-            paint.setMaskFilter(new BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL));
+            // BlurMaskFilter removed: not supported with hardware acceleration
             // 使用 SRC_OVER 混合，让背景模糊透过来
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
             return paint;
@@ -1722,12 +1726,12 @@ public class MainHook implements IXposedHookLoadPackage {
 
         @Override
         protected void onDraw(Canvas canvas) {
-            // 裁剪路径
-            android.graphics.Path clipPath = new android.graphics.Path();
-            clipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
+            // Reuse Path to avoid allocation in onDraw
+            mClipPath.reset();
+            mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
 
             int saveCount = canvas.save();
-            canvas.clipPath(clipPath);
+            canvas.clipPath(mClipPath);
 
             // 绘制顺序：从底到顶，每层独立可调
             drawBackgroundBlur(canvas);   // 1. 背景模糊（最底层）
@@ -1757,18 +1761,19 @@ public class MainHook implements IXposedHookLoadPackage {
         private void drawInnerBlur(Canvas canvas) {
             // 第1.5层：中间区域的额外模糊层
             // 让中间区域也有磨砂感，不是纯透明
+            // Note: BlurMaskFilter does not work with hardware acceleration, removed
             if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
-                Paint blurPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                blurPaint.setColor(Color.argb(0x18, 255, 255, 255)); // 9% 白色
-                blurPaint.setMaskFilter(new BlurMaskFilter(12f, BlurMaskFilter.Blur.NORMAL));
-                // 绘制一个稍小的圆角矩形在中间
+                if (mInnerBlurPaint == null) {
+                    mInnerBlurPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    mInnerBlurPaint.setColor(Color.argb(0x18, 255, 255, 255)); // 9% 白色
+                }
                 float inset = 8f;
-                RectF innerRect = new RectF(
+                mInnerRect.set(
                     mDrawRect.left + inset,
                     mDrawRect.top + inset,
                     mDrawRect.right - inset,
                     mDrawRect.bottom - inset);
-                canvas.drawRoundRect(innerRect, mCornerRadius - inset, mCornerRadius - inset, blurPaint);
+                canvas.drawRoundRect(mInnerRect, Math.max(0f, mCornerRadius - inset), Math.max(0f, mCornerRadius - inset), mInnerBlurPaint);
             }
         }
 
@@ -1786,11 +1791,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
         private void drawTopReflection(Canvas canvas) {
             // 顶部高光：模拟环境光在玻璃表面的反射
-            // 非常微妙，只在弹出时稍微明显
             int baseAlpha = REFLECTION_BASE_ALPHA + (int)(REFLECTION_GLOW_ALPHA * mPopGlow);
             mTopReflectionPaint.setAlpha(Math.min(255, baseAlpha));
-            RectF topRect = new RectF(0, 0, mViewWidth, mViewHeight * REFLECTION_HEIGHT_RATIO);
-            canvas.drawRect(topRect, mTopReflectionPaint);
+            mTopRect.set(0, 0, mViewWidth, mViewHeight * REFLECTION_HEIGHT_RATIO);
+            canvas.drawRect(mTopRect, mTopReflectionPaint);
         }
 
         private void drawRadialMask(Canvas canvas) {
