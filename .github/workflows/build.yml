@@ -55,7 +55,7 @@ jobs:
     - name: Extract Version Name
       id: version
       run: |
-        VERSION_NAME=$(grep -oP 'versionName\s+"\K[^"]+' app/build.gradle)
+        VERSION_NAME=$(grep -oP "versionName\s+['\"]\K[^'\"]+" app/build.gradle)
         echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
         echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
         echo "Version name: $VERSION_NAME"
