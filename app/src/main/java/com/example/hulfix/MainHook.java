@@ -629,66 +629,89 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void startEnterAnimation(final View view) {
         cancelAllAnimations();
-        // 初始状态：一个极小的凝聚点，像液体表面张力下的水珠
+        // === 初始状态：完全在屏幕右边缘外，像一滴液体悬在边缘等待落下 ===
+        // 横屏通知在右上角，所以从右侧屏幕外滑入最自然
         view.setAlpha(0f);
-        view.setTranslationX(0f);
-        view.setTranslationY(0f);
-        view.setScaleX(0.05f);
-        view.setScaleY(0.05f);
+        view.setTranslationX(WIN_W * 0.6f);  // 向右偏移 60% 宽度，在屏幕外
+        view.setTranslationY(-WIN_H * 0.3f);   // 向上偏移 30% 高度，从斜上方进入
+        view.setScaleX(0.0f);                  // 完全无体积，像未凝聚的液态
+        view.setScaleY(0.0f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        // 内容层初始隐藏
-        if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0.4f); mIconView.setScaleY(0.4f); }
-        if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationY(12f); }
-        if (mTextView != null) { mTextView.setAlpha(0f); mTextView.setTranslationY(8f); }
-        // 背景模糊初始隐藏
+        // 内容层初始完全隐藏
+        if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0.2f); mIconView.setScaleY(0.2f); }
+        if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationY(20f); }
+        if (mTextView != null) { mTextView.setAlpha(0f); mTextView.setTranslationY(16f); }
+        // 背景模糊初始完全隐藏
         if (mBgImageView != null) mBgImageView.setAlpha(0f);
         // 圆角初始为完全圆形（水滴状）
         if (mGlassView != null) mGlassView.setCornerRadius(WIN_H * 0.5f);
 
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
-        mEnterAnim.setDuration(520);
-        mEnterAnim.setInterpolator(null); // 自定义分段曲线，不用统一插值器
+        mEnterAnim.setDuration(700);  // 增加到 700ms，让整个过程更从容
+        mEnterAnim.setInterpolator(null);
         mEnterAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
             mEnterProgress = t;
 
-            // === Liquid Glass 弹出动画：凝聚 → 爆开 → 表面张力回弹 → 平静 ===
+            // === Liquid Glass 弹出动画：从边缘流淌 → 凝聚成形 → 膨胀展开 → 回弹稳定 ===
             float containerAlpha, containerScale, cornerRadius, popGlow;
+            float transX, transY;  // 位移
 
-            if (t < 0.15f) {
-                // 阶段1：凝聚（0~78ms）—— 液体聚集成水珠
-                float p = t / 0.15f;
+            if (t < 0.12f) {
+                // 阶段1：边缘涌现（0~84ms）—— 液体从屏幕右边缘"渗透"进来
+                float p = t / 0.12f;
                 float ease = p * p * (3f - 2f * p); // smoothstep
-                containerAlpha = 0.0f + 0.35f * ease;
-                containerScale = 0.05f + 0.55f * ease; // 0.05 → 0.60
-                cornerRadius = WIN_H * 0.5f; // 保持完全圆形
+                containerAlpha = 0.0f + 0.25f * ease;       // 0 → 0.25，极淡地出现
+                containerScale = 0.0f + 0.15f * ease;       // 0 → 0.15，从无到有凝聚
+                // 从屏幕外滑入：translationX 从 0.6*WIN_W → 0，translationY 从 -0.3*WIN_H → 0
+                transX = WIN_W * 0.6f * (1f - ease);
+                transY = -WIN_H * 0.3f * (1f - ease);
+                cornerRadius = WIN_H * 0.5f; // 保持完全圆形（水滴状）
                 popGlow = 0f;
-            } else if (t < 0.45f) {
-                // 阶段2：爆开膨胀（78~234ms）—— 水滴落在玻璃上扩散
-                float p = (t - 0.15f) / 0.30f;
+            } else if (t < 0.35f) {
+                // 阶段2：流淌凝聚（84~245ms）—— 液体继续滑入并快速凝聚
+                float p = (t - 0.12f) / 0.23f;
+                float ease = p * p * (3f - 2f * p);
+                // 弹性滑入：用 spring 让到达目标位置时有轻微回弹
+                float spring = (float)(1.0 - Math.exp(-4.0 * p) * Math.cos(6.0 * p));
+                containerAlpha = 0.25f + 0.50f * spring;      // 0.25 → 0.75
+                containerScale = 0.15f + 0.55f * spring;      // 0.15 → 0.70
+                // 位移：从偏移位置平滑到目标位置，spring 带来轻微过冲
+                float posProgress = Math.min(1f, spring);
+                transX = WIN_W * 0.6f * (1f - posProgress) * 0.1f; // 剩余 10% 偏移
+                transY = -WIN_H * 0.3f * (1f - posProgress) * 0.1f;
+                cornerRadius = WIN_H * 0.5f * (1f - p * 0.4f); // 开始变平
+                popGlow = p * 0.3f; // 光晕开始微亮
+            } else if (t < 0.60f) {
+                // 阶段3：膨胀展开（245~420ms）—— 水滴落在玻璃上扩散
+                float p = (t - 0.35f) / 0.25f;
                 // spring-like overshoot: 快速冲过目标再回弹
                 float spring = (float)(1.0 - Math.exp(-5.0 * p) * Math.cos(8.0 * p));
-                containerAlpha = 0.35f + 0.60f * spring;
-                containerScale = 0.60f + 0.52f * spring; // 0.60 → 1.12 overshoot
-                cornerRadius = WIN_H * 0.5f * (1f - p * 0.85f); // 圆形逐渐变平
-                popGlow = (float)Math.sin(p * Math.PI) * 0.9f; // 光晕在膨胀时亮起
-            } else if (t < 0.75f) {
-                // 阶段3：表面张力回弹（234~390ms）—— 液体表面张力让玻璃稳定
-                float p = (t - 0.45f) / 0.30f;
+                containerAlpha = 0.75f + 0.25f * spring;      // 0.75 → 1.0
+                containerScale = 0.70f + 0.45f * spring;      // 0.70 → 1.15 overshoot
+                transX = 0f; // 已到达目标位置
+                transY = 0f;
+                cornerRadius = WIN_H * 0.5f * (1f - 0.4f - p * 0.55f); // 继续变平
+                popGlow = (float)Math.sin(p * Math.PI) * 0.95f; // 光晕在膨胀时最亮
+            } else if (t < 0.82f) {
+                // 阶段4：表面张力回弹（420~574ms）—— 液体表面张力让玻璃稳定
+                float p = (t - 0.60f) / 0.22f;
                 float ease = p * p * (3f - 2f * p);
-                // 从 overshoot 回弹：1.12 → 0.94 → 1.04 → 1.0
-                float decay = (float)Math.exp(-3.0 * p);
-                float oscillation = (float)Math.cos(6.0 * p);
-                containerAlpha = 0.95f + 0.05f * ease;
-                containerScale = 1.04f + 0.08f * decay * oscillation - 0.04f * ease;
-                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * 0.15f * (1f - ease); // 接近最终圆角
-                popGlow = 0.9f * (1f - ease); // 光晕逐渐消散
+                // 从 overshoot 回弹：1.15 → 0.96 → 1.03 → 1.0
+                float decay = (float)Math.exp(-3.5 * p);
+                float oscillation = (float)Math.cos(7.0 * p);
+                containerAlpha = 1f;
+                containerScale = 1.02f + 0.13f * decay * oscillation - 0.02f * ease;
+                transX = 0f; transY = 0f;
+                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * 0.08f * (1f - ease); // 接近最终圆角
+                popGlow = 0.95f * (1f - ease); // 光晕逐渐消散
             } else {
-                // 阶段4：平静定型（390~520ms）—— 完全稳定
-                float p = (t - 0.75f) / 0.25f;
+                // 阶段5：平静定型（574~700ms）—— 完全稳定
+                float p = (t - 0.82f) / 0.18f;
                 float ease = p * p * (3f - 2f * p);
                 containerAlpha = 1f;
-                containerScale = 1.0f + 0.01f * (1f - ease); // 从 1.01 平滑到 1.0
+                containerScale = 1.0f + 0.008f * (1f - ease); // 从 1.008 平滑到 1.0
+                transX = 0f; transY = 0f;
                 cornerRadius = 28f;
                 popGlow = 0f;
             }
@@ -696,49 +719,51 @@ public class MainHook implements IXposedHookLoadPackage {
             view.setAlpha(containerAlpha);
             view.setScaleX(containerScale);
             view.setScaleY(containerScale);
+            view.setTranslationX(transX);
+            view.setTranslationY(transY);
             if (mGlassView != null) {
                 mGlassView.setCornerRadius(cornerRadius);
                 mGlassView.setPopGlow(popGlow);
             }
 
-            // === 背景模糊：从中心向外扩散 ===
+            // === 背景模糊：从中心向外扩散，比容器稍晚启动 ===
             if (mBgImageView != null) {
                 float bgAlpha;
-                if (t < 0.10f) {
-                    bgAlpha = t * 8f; // 快速启动
-                } else if (t < 0.40f) {
-                    float p = (t - 0.10f) / 0.30f;
-                    bgAlpha = 0.8f + 0.2f * (p * p * (3f - 2f * p));
+                if (t < 0.15f) {
+                    bgAlpha = 0f; // 前 105ms 完全隐藏，让容器先出现
+                } else if (t < 0.45f) {
+                    float p = (t - 0.15f) / 0.30f;
+                    bgAlpha = p * p * (3f - 2f * p); // 0 → 1
                 } else {
                     bgAlpha = 1f;
                 }
                 mBgImageView.setAlpha(Math.min(1f, bgAlpha));
             }
 
-            // === 内容分层浮现：像从玻璃内部浮出 ===
-            // 图标：t=0.18 开始，带弹性浮出
-            if (mIconView != null && t > 0.18f) {
-                float ip = Math.min(1f, (t - 0.18f) / 0.30f);
+            // === 内容分层浮现：像从玻璃内部浮出，比容器更晚 ===
+            // 图标：t=0.25 开始，带弹性浮出
+            if (mIconView != null && t > 0.25f) {
+                float ip = Math.min(1f, (t - 0.25f) / 0.35f);
                 float iease = ip * ip * (3f - 2f * ip);
                 float ispring = (float)(1.0 - Math.exp(-4.0 * ip) * Math.cos(6.0 * ip));
                 mIconView.setAlpha(iease);
-                float iconScale = 0.4f + 0.6f * ispring;
+                float iconScale = 0.2f + 0.8f * ispring;
                 mIconView.setScaleX(iconScale);
                 mIconView.setScaleY(iconScale);
             }
-            // 标题：t=0.32 开始，从下方滑入 + 淡入
-            if (mTitleView != null && t > 0.32f) {
-                float tp = Math.min(1f, (t - 0.32f) / 0.28f);
+            // 标题：t=0.40 开始，从下方滑入 + 淡入
+            if (mTitleView != null && t > 0.40f) {
+                float tp = Math.min(1f, (t - 0.40f) / 0.30f);
                 float tease = tp * tp * (3f - 2f * tp);
                 mTitleView.setAlpha(tease);
-                mTitleView.setTranslationY(12f * (1f - tease));
+                mTitleView.setTranslationY(20f * (1f - tease));
             }
-            // 文字：t=0.48 开始，淡入 + 轻微上浮
-            if (mTextView != null && t > 0.48f) {
-                float cp = Math.min(1f, (t - 0.48f) / 0.28f);
+            // 文字：t=0.55 开始，淡入 + 轻微上浮
+            if (mTextView != null && t > 0.55f) {
+                float cp = Math.min(1f, (t - 0.55f) / 0.28f);
                 float cease = cp * cp * (3f - 2f * cp);
                 mTextView.setAlpha(cease);
-                mTextView.setTranslationY(8f * (1f - cease));
+                mTextView.setTranslationY(16f * (1f - cease));
             }
         });
         mEnterAnim.addListener(new android.animation.AnimatorListenerAdapter() {
@@ -749,6 +774,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 view.setAlpha(1f);
                 view.setScaleX(1f);
                 view.setScaleY(1f);
+                view.setTranslationX(0f);
                 view.setTranslationY(0f);
                 mEnterProgress = 1f;
                 if (mBgImageView != null) mBgImageView.setAlpha(1f);
@@ -763,7 +789,6 @@ public class MainHook implements IXposedHookLoadPackage {
         });
         mEnterAnim.start();
     }
-
     private void startExitAnimation(final View view, final Runnable onEnd, final int exitDirection) {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
