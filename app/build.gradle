@@ -1,4 +1,6 @@
-apply plugin: 'com.android.application'
+plugins {
+    id 'com.android.application'
+}
 
 android {
     namespace 'com.example.hulfix'
@@ -8,8 +10,7 @@ android {
         applicationId "com.example.hulfix"
         minSdk 24
         targetSdk 34
-        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
-        versionName "27.5.6"
+        versionName "27.5.7"
     }
 
     buildTypes {
