@@ -10,7 +10,7 @@ android {
         applicationId "com.example.hulfix"
         minSdk 24
         targetSdk 34
-        versionName "27.5.7"
+        versionName "27.5.8"
     }
 
     buildTypes {
