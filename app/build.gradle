@@ -9,7 +9,7 @@ android {
         minSdk 24
         targetSdk 34
         versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 1
-        versionName "27.5.0"
+        versionName "27.5.2"
     }
 
     buildTypes {

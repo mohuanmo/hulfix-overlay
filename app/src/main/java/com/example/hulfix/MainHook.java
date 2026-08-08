@@ -472,7 +472,8 @@ public class MainHook implements IXposedHookLoadPackage {
         // 这样更新通知（如微信从1条变成2条）不会被误判为过期
         long when = sbn.getNotification().when;
         long postTime = sbn.getPostTime();
-        long referenceTime = Math.max(when, postTime);
+        // when 可能为 0（某些应用不设置），此时回退到 postTime
+        long referenceTime = (when > 0) ? Math.max(when, postTime) : postTime;
         long age = System.currentTimeMillis() - referenceTime;
         boolean result = age <= NOTIFICATION_MAX_AGE_MS;
         return result;
@@ -642,10 +643,11 @@ public class MainHook implements IXposedHookLoadPackage {
     private void startEnterAnimation(final View view) {
         cancelAllAnimations();
         // === 初始状态：完全在屏幕右边缘外，像一滴液体悬在边缘等待落下 ===
-        // 横屏通知在右上角，所以从右侧屏幕外滑入最自然
+        // 横屏通知在右上角，从右侧远处滑入
+        // 使用足够大的偏移确保完全在屏幕外，不受屏幕分辨率影响
         view.setAlpha(0f);
-        view.setTranslationX(WIN_W * 0.6f);  // 向右偏移 60% 宽度，在屏幕外
-        view.setTranslationY(-WIN_H * 0.3f);   // 向上偏移 30% 高度，从斜上方进入
+        view.setTranslationX(WIN_W * 2.0f);   // 向右偏移 2 倍宽度，确保完全在屏幕外
+        view.setTranslationY(-WIN_H * 3.0f);  // 向上偏移 3 倍高度，从远处斜上方进入
         view.setScaleX(0.0f);                  // 完全无体积，像未凝聚的液态
         view.setScaleY(0.0f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
@@ -669,29 +671,29 @@ public class MainHook implements IXposedHookLoadPackage {
             float containerAlpha, containerScale, cornerRadius, popGlow;
             float transX, transY;  // 位移
 
-            if (t < 0.12f) {
-                // 阶段1：边缘涌现（0~84ms）—— 液体从屏幕右边缘"渗透"进来
-                float p = t / 0.12f;
+            if (t < 0.15f) {
+                // 阶段1：边缘涌现（0~105ms）—— 液体从远处"渗透"进来
+                float p = t / 0.15f;
                 float ease = p * p * (3f - 2f * p); // smoothstep
-                containerAlpha = 0.0f + 0.25f * ease;       // 0 → 0.25，极淡地出现
-                containerScale = 0.0f + 0.15f * ease;       // 0 → 0.15，从无到有凝聚
-                // 从屏幕外滑入：translationX 从 0.6*WIN_W → 0，translationY 从 -0.3*WIN_H → 0
-                transX = WIN_W * 0.6f * (1f - ease);
-                transY = -WIN_H * 0.3f * (1f - ease);
+                containerAlpha = 0.0f + 0.20f * ease;       // 0 → 0.20，极淡地出现
+                containerScale = 0.0f + 0.12f * ease;       // 0 → 0.12，从无到有凝聚
+                // 从远处滑入：translationX 从 2*WIN_W → 0，translationY 从 -3*WIN_H → 0
+                transX = WIN_W * 2.0f * (1f - ease);
+                transY = -WIN_H * 3.0f * (1f - ease);
                 cornerRadius = WIN_H * 0.5f; // 保持完全圆形（水滴状）
                 popGlow = 0f;
-            } else if (t < 0.35f) {
-                // 阶段2：流淌凝聚（84~245ms）—— 液体继续滑入并快速凝聚
-                float p = (t - 0.12f) / 0.23f;
+            } else if (t < 0.40f) {
+                // 阶段2：流淌凝聚（105~280ms）—— 液体继续滑入并快速凝聚
+                float p = (t - 0.15f) / 0.25f;
                 float ease = p * p * (3f - 2f * p);
                 // 弹性滑入：用 spring 让到达目标位置时有轻微回弹
                 float spring = (float)(1.0 - Math.exp(-4.0 * p) * Math.cos(6.0 * p));
-                containerAlpha = 0.25f + 0.50f * spring;      // 0.25 → 0.75
-                containerScale = 0.15f + 0.55f * spring;      // 0.15 → 0.70
-                // 位移：从偏移位置平滑到目标位置，spring 带来轻微过冲
+                containerAlpha = 0.20f + 0.55f * spring;      // 0.20 → 0.75
+                containerScale = 0.12f + 0.58f * spring;      // 0.12 → 0.70
+                // 位移：从远处平滑到目标位置
                 float posProgress = Math.min(1f, spring);
-                transX = WIN_W * 0.6f * (1f - posProgress) * 0.1f; // 剩余 10% 偏移
-                transY = -WIN_H * 0.3f * (1f - posProgress) * 0.1f;
+                transX = WIN_W * 2.0f * (1f - posProgress);
+                transY = -WIN_H * 3.0f * (1f - posProgress);
                 cornerRadius = WIN_H * 0.5f * (1f - p * 0.4f); // 开始变平
                 popGlow = p * 0.3f; // 光晕开始微亮
             } else if (t < 0.60f) {
@@ -789,6 +791,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 view.setTranslationX(0f);
                 view.setTranslationY(0f);
                 mEnterProgress = 1f;
+                // 恢复 root 的可见性
+                if (mCurrentOverlay != null) mCurrentOverlay.setAlpha(1f);
                 if (mBgImageView != null) mBgImageView.setAlpha(1f);
                 if (mIconView != null) { mIconView.setAlpha(1f); mIconView.setScaleX(1f); mIconView.setScaleY(1f); }
                 if (mTitleView != null) { mTitleView.setAlpha(1f); mTitleView.setTranslationY(0f); }
@@ -964,6 +968,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 ImageView bgView = new ImageView(mContext);
                 bgView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 bgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                // 圆角裁剪，与外层匹配
+                bgView.setClipToOutline(true);
+                bgView.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
+                    }
+                });
                 root.addView(bgView);
                 mBgImageView = bgView;
 
@@ -1000,6 +1012,14 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 };
                 tintView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
+                // 圆角裁剪，与外层匹配
+                tintView.setClipToOutline(true);
+                tintView.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
+                    }
+                });
                 root.addView(tintView);
                 mBgTintView = tintView;
 
@@ -1227,6 +1247,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 params.x = WIN_X;
                 params.y = WIN_Y;
 
+                // 防止初始闪烁：先设置不可见，动画开始后再显示
+                root.setAlpha(0f);
                 try {
                     mWindowManager.addView(root, params);
                 } catch (IllegalStateException e) {
