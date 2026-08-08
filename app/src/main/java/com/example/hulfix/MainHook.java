@@ -1584,19 +1584,29 @@ public class MainHook implements IXposedHookLoadPackage {
 
         // ====== 初始化各层 ======
 
+        // ====== 配置常量 ======
+        // 液态玻璃透明度配置（0-255）
+        private static final int TINT_CENTER_ALPHA_LIGHT = 0x40;  // 中心：25% 不透明度
+        private static final int TINT_EDGE_ALPHA_LIGHT = 0x90;    // 边缘：56% 不透明度
+        private static final int TINT_CENTER_ALPHA_DARK = 0x38;   // 中心：22% 不透明度
+        private static final int TINT_EDGE_ALPHA_DARK = 0x80;     // 边缘：50% 不透明度
+
         private Paint initBasePaint(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 磨砂玻璃主体：高对比度半透明
-            // 浅色主题：白色半透明（alpha 160/255 ≈ 63% 不透明度）
-            // 深色主题：黑色半透明（alpha 140/255 ≈ 55% 不透明度）
-            int centerColor = isDark ? 0x8C000000 : 0xA0FFFFFF;
-            int edgeColor = isDark ? 0xB4000000 : 0xC8FFFFFF;
+            // iOS 26 Liquid Glass: 中心更透明，让背景清晰可见
+            // 边缘略实，形成玻璃厚度感
+            int centerAlpha = isDark ? TINT_CENTER_ALPHA_DARK : TINT_CENTER_ALPHA_LIGHT;
+            int edgeAlpha = isDark ? TINT_EDGE_ALPHA_DARK : TINT_EDGE_ALPHA_LIGHT;
+            int centerColor = Color.argb(centerAlpha, 255, 255, 255);
+            int edgeColor = Color.argb(edgeAlpha, 255, 255, 255);
             RadialGradient grad = new RadialGradient(
                 w * 0.5f, h * 0.4f, Math.max(w, h) * 0.8f,
                 new int[]{centerColor, edgeColor},
                 new float[]{0f, 1f},
                 Shader.TileMode.CLAMP);
             paint.setShader(grad);
+            // 使用 SRC_OVER 混合，让背景模糊透过来
+            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
             return paint;
         }
 
@@ -1632,17 +1642,20 @@ public class MainHook implements IXposedHookLoadPackage {
             return paint;
         }
 
+        // 径向暗角配置
+        private static final int VIGNETTE_CENTER_ALPHA = 0x10;  // 中心：6% 不透明度
+        private static final int VIGNETTE_EDGE_ALPHA = 0x50;    // 边缘：31% 不透明度
+
         private Paint initRadialMask(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 中心更透明，边缘更实 - 高对比度
-            int centerAlpha = isDark ? 0x30 : 0x28;  // 中心：约 16-19% 不透明度
-            int edgeAlpha = isDark ? 0x90 : 0x80;    // 边缘：约 50-56% 不透明度
+            // 径向暗角：中心略亮，边缘略暗，增加玻璃厚度感
+            // 使用 OVERLAY 模式，只提亮/压暗，不改变颜色
             RadialGradient gradient = new RadialGradient(
                 w * 0.5f, h * 0.45f, Math.max(w, h) * 0.7f,
                 new int[]{
-                    Color.argb(centerAlpha, 255, 255, 255),
-                    Color.argb((centerAlpha + edgeAlpha) / 2, 255, 255, 255),
-                    Color.argb(edgeAlpha, 255, 255, 255)
+                    Color.argb(VIGNETTE_CENTER_ALPHA, 255, 255, 255),
+                    Color.argb((VIGNETTE_CENTER_ALPHA + VIGNETTE_EDGE_ALPHA) / 2, 255, 255, 255),
+                    Color.argb(VIGNETTE_EDGE_ALPHA, 0, 0, 0)
                 },
                 new float[]{0f, 0.5f, 1f},
                 Shader.TileMode.CLAMP
@@ -1697,42 +1710,46 @@ public class MainHook implements IXposedHookLoadPackage {
             int saveCount = canvas.save();
             canvas.clipPath(clipPath);
 
-            // 1. 磨砂玻璃底色（主体可见层）
-            drawBaseLayer(canvas);
-
-            // 2. 顶部白色反光带（明显可见）
-            drawTopReflection(canvas);
-
-            // 3. 径向渐变遮罩（中心→边缘透明度变化）
-            drawRadialMask(canvas);
-
-            // 4. 边缘高光（顶部/左侧亮边）
-            drawEdgeHighlight(canvas);
-
-            // 5. 边缘阴影（底部/右侧暗边）
-            drawEdgeShadow(canvas);
+            // 绘制顺序：从底到顶，每层独立可调
+            drawBackgroundBlur(canvas);   // 1. 背景模糊（最底层）
+            drawBaseTint(canvas);         // 2. 半透明色调叠加
+            drawRadialMask(canvas);       // 3. 径向暗角（中心亮边缘暗）
+            drawTopReflection(canvas);    // 4. 顶部高光反射
+            drawEdgeHighlight(canvas);    // 5. 边缘亮线
+            drawEdgeShadow(canvas);       // 6. 边缘暗线
 
             canvas.restoreToCount(saveCount);
         }
 
         // ====== 各层绘制方法 ======
 
-        private void drawBaseLayer(Canvas canvas) {
-            // 先画背景模糊位图（如果有）
+        // ====== 绘制层：从底到顶 ======
+
+        private void drawBackgroundBlur(Canvas canvas) {
+            // 第1层：背景模糊位图（最底层，必须可见）
             if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
                 canvas.drawBitmap(mBgBitmap, null, mDrawRect, mBgPaint);
             }
-            // 再画磨砂玻璃主体层
-            mBasePaint.setAlpha(255);
+        }
+
+        private void drawBaseTint(Canvas canvas) {
+            // 第2层：半透明色调叠加（给玻璃着色，不覆盖背景）
+            // mBasePaint 已包含 RadialGradient，中心更透明，边缘更实
+            // 不调用 setAlpha()，保持 Shader 原始透明度
             canvas.drawRect(mDrawRect, mBasePaint);
         }
 
+        // 顶部高光配置
+        private static final int REFLECTION_BASE_ALPHA = 40;   // 基础透明度
+        private static final int REFLECTION_GLOW_ALPHA = 30;   // 弹出时额外亮度
+        private static final float REFLECTION_HEIGHT_RATIO = 0.30f;  // 只画顶部 30%
+
         private void drawTopReflection(Canvas canvas) {
-            // 顶部反光：微妙的水汽感，不抢眼
-            int baseAlpha = (int)(70 + 40 * mPopGlow);
+            // 顶部高光：模拟环境光在玻璃表面的反射
+            // 非常微妙，只在弹出时稍微明显
+            int baseAlpha = REFLECTION_BASE_ALPHA + (int)(REFLECTION_GLOW_ALPHA * mPopGlow);
             mTopReflectionPaint.setAlpha(Math.min(255, baseAlpha));
-            // 只画顶部 35% 区域，避免和边缘描边重叠产生不均匀感
-            RectF topRect = new RectF(0, 0, mViewWidth, mViewHeight * 0.35f);
+            RectF topRect = new RectF(0, 0, mViewWidth, mViewHeight * REFLECTION_HEIGHT_RATIO);
             canvas.drawRect(topRect, mTopReflectionPaint);
         }
 
@@ -1743,9 +1760,15 @@ public class MainHook implements IXposedHookLoadPackage {
             canvas.drawRect(mDrawRect, mRadialMaskPaint);
         }
 
+        // 边缘高光配置
+        private static final int HIGHLIGHT_BASE_ALPHA = 60;   // 基础透明度
+        private static final int HIGHLIGHT_GLOW_ALPHA = 25;   // 弹出时额外亮度
+        private static final float HIGHLIGHT_STROKE_WIDTH = 1.5f;
+
         private void drawEdgeHighlight(Canvas canvas) {
-            // 边缘高光：微妙，不抢眼
-            int baseAlpha = (int)(100 + 40 * mPopGlow);
+            // 边缘高光：模拟玻璃边缘的折射反光
+            // 非常细，只在弹出时稍微明显
+            int baseAlpha = HIGHLIGHT_BASE_ALPHA + (int)(HIGHLIGHT_GLOW_ALPHA * mPopGlow);
             mEdgeHighlightPaint.setAlpha(Math.min(255, baseAlpha));
             float inset = 1.0f;
             RectF rect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
@@ -1755,10 +1778,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 mEdgeHighlightPaint);
         }
 
+        // 边缘阴影配置
+        private static final int SHADOW_BASE_ALPHA = 80;   // 基础透明度
+        private static final float SHADOW_STROKE_WIDTH = 1.0f;
+
         private void drawEdgeShadow(Canvas canvas) {
-            // 边缘阴影
-            int baseAlpha = (int)(160);
-            mEdgeShadowPaint.setAlpha(Math.min(255, baseAlpha));
+            // 边缘阴影：增加玻璃的厚度感和立体感
+            // 比高光更暗，形成对比
+            mEdgeShadowPaint.setAlpha(SHADOW_BASE_ALPHA);
             float inset = 0.5f;
             RectF rect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
             canvas.drawRoundRect(rect,
