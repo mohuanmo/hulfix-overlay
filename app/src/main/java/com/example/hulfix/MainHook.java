@@ -1601,10 +1601,22 @@ public class MainHook implements IXposedHookLoadPackage {
 
         private Paint initBasePaint(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // Uniform glass tint: even transparency across the whole surface
-            // No radial gradient - eliminates the "inner transparent box" effect
-            int alpha = isDark ? 0x38 : 0x40; // ~22-25% uniform white
-            paint.setColor(Color.argb(alpha, 255, 255, 255));
+            // iOS 26 Liquid Glass: 中心半透明，有磨砂感但不遮挡背景
+            // 边缘略实，形成玻璃厚度感
+            int centerAlpha = isDark ? TINT_CENTER_ALPHA_DARK : TINT_CENTER_ALPHA_LIGHT;
+            int edgeAlpha = isDark ? TINT_EDGE_ALPHA_DARK : TINT_EDGE_ALPHA_LIGHT;
+            int centerColor = Color.argb(centerAlpha, 255, 255, 255);
+            int edgeColor = Color.argb(edgeAlpha, 255, 255, 255);
+            // 中心点在正中央，半径覆盖整个 View
+            RadialGradient grad = new RadialGradient(
+                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.7f,
+                new int[]{centerColor, edgeColor},
+                new float[]{0f, 1f},
+                Shader.TileMode.CLAMP);
+            paint.setShader(grad);
+            // 添加模糊效果，增加磨砂玻璃质感
+            // BlurMaskFilter removed: not supported with hardware acceleration
+            // 使用 SRC_OVER 混合，让背景模糊透过来
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
             return paint;
         }
@@ -1647,9 +1659,19 @@ public class MainHook implements IXposedHookLoadPackage {
 
         private Paint initRadialMask(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // Uniform subtle overlay instead of radial vignette
-            // Eliminates the "inner transparent box" effect while keeping glass feel
-            paint.setColor(Color.argb(0x10, 0, 0, 0)); // very subtle uniform dark
+            // 径向暗角：中心略亮，边缘略暗，增加玻璃厚度感
+            // 使用 OVERLAY 模式，只提亮/压暗，不改变颜色
+            RadialGradient gradient = new RadialGradient(
+                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.7f,
+                new int[]{
+                    Color.argb(VIGNETTE_CENTER_ALPHA, 255, 255, 255),
+                    Color.argb((VIGNETTE_CENTER_ALPHA + VIGNETTE_EDGE_ALPHA) / 2, 255, 255, 255),
+                    Color.argb(VIGNETTE_EDGE_ALPHA, 0, 0, 0)
+                },
+                new float[]{0f, 0.5f, 1f},
+                Shader.TileMode.CLAMP
+            );
+            paint.setShader(gradient);
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
             return paint;
         }
@@ -1757,7 +1779,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         private void drawBaseTint(Canvas canvas) {
             // 第2层：半透明色调叠加（给玻璃着色，不覆盖背景）
-            // mBasePaint now uses uniform tint for even transparency
+            // mBasePaint 已包含 RadialGradient，中心更透明，边缘更实
             // 使用 drawRoundRect 确保和圆角一致
             canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBasePaint);
         }
