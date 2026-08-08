@@ -651,7 +651,7 @@ public class MainHook implements IXposedHookLoadPackage {
         ObjectAnimator cTransY = ObjectAnimator.ofFloat(view, "translationY", -WIN_H * 0.8f, 0f);
         containerSet.playTogether(cAlpha, cScaleX, cScaleY, cTransX, cTransY);
         containerSet.setDuration(420);
-        containerSet.setInterpolator(new android.view.animation.FastOutSlowInInterpolator());
+        containerSet.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
 
         // === 图标弹性浮现 ===
         AnimatorSet iconSet = new AnimatorSet();
@@ -673,7 +673,7 @@ public class MainHook implements IXposedHookLoadPackage {
             titleSet.playTogether(tAlpha, tTransY);
             titleSet.setDuration(320);
             titleSet.setStartDelay(120);
-            titleSet.setInterpolator(new android.view.animation.FastOutSlowInInterpolator());
+            titleSet.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
         }
 
         // === 内容滑入 ===
@@ -684,7 +684,7 @@ public class MainHook implements IXposedHookLoadPackage {
             textSet.playTogether(txAlpha, txTransY);
             textSet.setDuration(280);
             textSet.setStartDelay(180);
-            textSet.setInterpolator(new android.view.animation.FastOutSlowInInterpolator());
+            textSet.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
         }
 
         // 组合所有动画
@@ -771,7 +771,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         exitSet.playTogether(scaleX, scaleY, alpha, transX, transY);
         exitSet.setDuration(320);
-        exitSet.setInterpolator(new android.view.animation.FastOutSlowInInterpolator());
+        exitSet.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
         exitSet.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
