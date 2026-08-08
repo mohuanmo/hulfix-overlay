@@ -27,10 +27,6 @@
     <dimen name="title_text_size">14px</dimen>
     <dimen name="content_text_size">12px</dimen>
 
-    <!-- Blur -->
-    <dimen name="blur_radius">22px</dimen>
-    <integer name="blur_scale_factor">4</integer>
-
     <!-- Animation -->
     <dimen name="enter_trans_x_max">1346px</dimen>
     <dimen name="enter_trans_y_max">357px</dimen>
@@ -40,14 +36,4 @@
     <!-- Touch feedback -->
     <dimen name="touch_press_scale">0.97</dimen>
     <dimen name="swipe_alpha_dist">300px</dimen>
-
-    <!-- Edge stroke -->
-    <dimen name="edge_highlight_width">2px</dimen>
-    <dimen name="edge_shadow_width">1.5px</dimen>
-    <dimen name="inner_blur_inset">8px</dimen>
-    <dimen name="inner_blur_radius">12px</dimen>
-
-    <!-- Reflection -->
-    <dimen name="reflection_height_ratio">0.30</dimen>
-    <dimen name="shimmer_translate_ratio">0.3</dimen>
 </resources>

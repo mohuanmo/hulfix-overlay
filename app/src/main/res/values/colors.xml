@@ -1,46 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Liquid Glass Base -->
-    <color name="glass_base_dark">#18000000</color>
-    <color name="glass_base_light">#1AFFFFFF</color>
-    <color name="glass_edge_dark">#40FFFFFF</color>
-    <color name="glass_edge_light">#55FFFFFF</color>
-    <color name="glass_top_highlight_dark">#35FFFFFF</color>
-    <color name="glass_top_highlight_light">#60FFFFFF</color>
-    <color name="glass_bottom_glow_dark">#12FFFFFF</color>
-    <color name="glass_bottom_glow_light">#18FFFFFF</color>
-
     <!-- Text -->
     <color name="text_primary_dark">#FFFFFFFF</color>
     <color name="text_primary_light">#FF000000</color>
     <color name="text_secondary_dark">#FFCCCCCC</color>
     <color name="text_secondary_light">#FF333333</color>
-
-    <!-- Liquid Glass View internal -->
-    <color name="lg_tint_center_light">#20FFFFFF</color>
-    <color name="lg_tint_center_dark">#18FFFFFF</color>
-    <color name="lg_tint_edge_light">#70FFFFFF</color>
-    <color name="lg_tint_edge_dark">#60FFFFFF</color>
-
-    <!-- Reflection gradient stops -->
-    <color name="lg_reflection_start">#00FFFFFF</color>
-    <color name="lg_reflection_mid">#80FFFFFF</color>
-    <color name="lg_reflection_mid2">#30FFFFFF</color>
-    <color name="lg_reflection_end">#00FFFFFF</color>
-
-    <!-- Edge highlight -->
-    <color name="lg_edge_highlight_dark">#B0FFFFFF</color>
-    <color name="lg_edge_highlight_light">#D0FFFFFF</color>
-
-    <!-- Edge shadow -->
-    <color name="lg_edge_shadow_dark">#70000000</color>
-    <color name="lg_edge_shadow_light">#50FFFFFF</color>
-
-    <!-- Vignette -->
-    <color name="lg_vignette_center">#08FFFFFF</color>
-    <color name="lg_vignette_mid">#1CFFFFFF</color>
-    <color name="lg_vignette_edge">#30000000</color>
-
-    <!-- Inner blur overlay -->
-    <color name="lg_inner_blur">#18FFFFFF</color>
 </resources>

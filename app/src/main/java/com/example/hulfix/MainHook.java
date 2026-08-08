@@ -15,8 +15,6 @@ import android.animation.ObjectAnimator;
 import android.view.animation.OvershootInterpolator;
 import android.animation.ValueAnimator;
 import android.graphics.PixelFormat;
-import android.graphics.BlurMaskFilter;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -32,25 +30,8 @@ import android.widget.ImageView;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.Paint;
-import android.graphics.Color;
-import android.graphics.Matrix;
-import android.graphics.Shader;
-import android.graphics.BitmapShader;
-import android.graphics.RadialGradient;
-import android.graphics.LinearGradient;
-import android.graphics.SweepGradient;
-import android.graphics.RectF;
-import android.graphics.PorterDuff;
-import android.graphics.PorterDuffXfermode;
-import android.graphics.ColorMatrix;
-import android.graphics.ColorMatrixColorFilter;
 import android.view.ViewOutlineProvider;
 import android.graphics.Outline;
-import android.view.animation.LinearInterpolator;
-import android.view.animation.AccelerateDecelerateInterpolator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -124,12 +105,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private ImageView mIconView = null;
     private TextView mTitleView = null;
     private TextView mTextView = null;
-    private LiquidGlassView mGlassView = null;
-    private Bitmap mBlurredBgBitmap = null;
-    private Runnable mBgUpdateRunnable = null;
-    private static final long BG_UPDATE_INTERVAL_MS = 500;
-    private static final float BLUR_RADIUS = 22f;
-    private static final int BLUR_SCALE_FACTOR = 4;
 
     private final Object mOverlayLock = new Object();
 
@@ -654,8 +629,6 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0.2f); mIconView.setScaleY(0.2f); }
         if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationY(20f); }
         if (mTextView != null) { mTextView.setAlpha(0f); mTextView.setTranslationY(16f); }
-        // 圆角初始为完全圆形（水滴状）
-        if (mGlassView != null) mGlassView.setCornerRadius(WIN_H * 0.5f);
 
         mEnterAnim = ValueAnimator.ofFloat(0f, 1f);
         mEnterAnim.setDuration(700);  // 增加到 700ms，让整个过程更从容
@@ -732,10 +705,6 @@ public class MainHook implements IXposedHookLoadPackage {
             view.setScaleY(containerScale);
             view.setTranslationX(transX);
             view.setTranslationY(transY);
-            if (mGlassView != null) {
-                mGlassView.setCornerRadius(cornerRadius);
-                mGlassView.setPopGlow(popGlow);
-            }
 
             // === 内容分层浮现：像从玻璃内部浮出，比容器更晚 ===
             // 图标：t=0.25 开始，带弹性浮出
@@ -779,10 +748,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 if (mIconView != null) { mIconView.setAlpha(1f); mIconView.setScaleX(1f); mIconView.setScaleY(1f); }
                 if (mTitleView != null) { mTitleView.setAlpha(1f); mTitleView.setTranslationY(0f); }
                 if (mTextView != null) { mTextView.setAlpha(1f); mTextView.setTranslationY(0f); }
-                if (mGlassView != null) {
-                    mGlassView.setCornerRadius(28f);
-                    mGlassView.setPopGlow(0f);
-                }
             }
         });
         mEnterAnim.start();
@@ -800,46 +765,34 @@ public class MainHook implements IXposedHookLoadPackage {
         mExitAnim.setInterpolator(null);
         mExitAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            float alpha, scale, cornerRadius, transX, transY;
-            if (t < 0.25f) {
-                // 阶段1：吸一下（0~70ms）
-                float p = t / 0.25f;
-                float ease = p * p;
-                alpha = 1f - ease * 0.1f;
-                scale = 1f - ease * 0.12f;
-                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * ease * 0.3f;
-                transX = 0f; transY = 0f;
-            } else if (t < 0.65f) {
-                // 阶段2：缩成圆点（70~182ms）
-                float p = (t - 0.25f) / 0.40f;
-                float ease = p * p * p;
-                alpha = 0.9f - ease * 0.7f;
-                scale = 0.88f - ease * 0.88f;
-                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * (0.3f + ease * 0.7f);
-                switch (exitDirection) {
-                    case 1: transX = 0f; transY = -10f * ease; break;
-                    case 2: transX = 10f * ease; transY = 0f; break;
-                    default: transX = -10f * ease; transY = 0f; break;
-                }
+            float alpha = 1f - t;
+            float scale = 1f - 0.15f * t;
+            float transX = 0f, transY = 0f;
+            if (exitDirection == 0) {
+                // 左滑退出
+                transX = -WIN_W * 1.2f * t;
+                transY = -WIN_H * 0.3f * t;
+            } else if (exitDirection == 1) {
+                // 上滑退出
+                transX = 0f;
+                transY = -WIN_H * 2.0f * t;
             } else {
-                // 阶段3："啵"地消失（182~280ms）
-                float p = (t - 0.65f) / 0.35f;
-                float ease = p * p * p * p;
-                alpha = 0.2f * (1f - ease);
-                scale = ease * 0.02f;
-                cornerRadius = WIN_H * 0.5f;
-                switch (exitDirection) {
-                    case 1: transX = 0f; transY = -10f - 20f * ease; break;
-                    case 2: transX = 10f + 20f * ease; transY = 0f; break;
-                    default: transX = -10f - 20f * ease; transY = 0f; break;
-                }
+                // 右滑退出
+                transX = WIN_W * 1.2f * t;
+                transY = -WIN_H * 0.3f * t;
             }
+            // 加速曲线
+            float accel = t * t;
+            transX *= accel;
+            transY *= accel;
+            alpha = Math.max(0f, 1f - accel);
+            scale = Math.max(0.01f, 1f - 0.2f * accel);
+
             view.setAlpha(Math.max(0f, alpha));
             view.setScaleX(Math.max(0.01f, scale));
             view.setScaleY(Math.max(0.01f, scale));
             view.setTranslationX(transX);
             view.setTranslationY(transY);
-            if (mGlassView != null) mGlassView.setCornerRadius(cornerRadius);
         });
         mExitAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
@@ -856,23 +809,24 @@ public class MainHook implements IXposedHookLoadPackage {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         mBounceAnim = ValueAnimator.ofFloat(0f, 1f);
-        mBounceAnim.setDuration(380);
+        mBounceAnim.setDuration(400);
         mBounceAnim.setInterpolator(null);
         mBounceAnim.addUpdateListener(anim -> {
             float t = (float) anim.getAnimatedValue();
-            // 回弹：1.5个周期，中等振幅
-            float decay = (float) Math.exp(-5 * t);
-            float oscillation = (float) Math.sin(t * Math.PI * 4);
-            float offset = 20f * decay * oscillation * direction;  // 12f → 20f
+            // 弹性回弹：从当前位置弹回原点
+            float decay = (float)Math.exp(-5.0 * t);
+            float oscillation = (float)Math.cos(10.0 * t);
+            float offset = direction * 30f * decay * oscillation;
             view.setTranslationX(offset);
-            view.setAlpha(1f);
+            view.setAlpha(Math.min(1f, 0.7f + 0.3f * (1f - decay)));
         });
         mBounceAnim.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 if (mBounceAnim != animation) return;
                 mBounceAnim = null;
-                view.setTranslationX(0f);
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
+                view.setTranslationX(0f);
+                view.setAlpha(1f);
             }
         });
         mBounceAnim.start();
@@ -925,10 +879,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
 
                 boolean isDark = isDarkMode();
-                int glassBaseColor = isDark ? 0x18000000 : 0x1AFFFFFF;
-                int edgeColor = isDark ? 0x40FFFFFF : 0x55FFFFFF;
-                int topHighlightStart = isDark ? 0x35FFFFFF : 0x60FFFFFF;
-                int bottomGlowEnd = isDark ? 0x12FFFFFF : 0x18FFFFFF;
                 int textColorPrimary = isDark ? 0xFFFFFFFF : 0xFF000000;
                 int textColorSecondary = isDark ? 0xFFCCCCCC : 0xFF333333;
 
@@ -945,13 +895,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 root.setClipToOutline(true);
 
-                // === 第1层：液态玻璃效果层（Shader 动态渲染，包含径向渐变遮罩 + 模糊背景）===
-                LiquidGlassView glassOverlay = new LiquidGlassView(mContext, WIN_W, WIN_H, isDark);
-                glassOverlay.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
-                root.addView(glassOverlay);
-                mGlassView = glassOverlay;
-
-                // === 第3层：内容容器（可移动）===
+                // === 内容容器（可移动）===
                 LinearLayout contentContainer = new LinearLayout(mContext);
                 contentContainer.setOrientation(LinearLayout.HORIZONTAL);
                 contentContainer.setPadding(28, 18, 28, 18);
@@ -1021,7 +965,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mVelocityTracker.addMovement(event);
                                 v.animate().scaleX(0.97f).scaleY(0.97f)
                                     .setDuration(80).setInterpolator(new DecelerateInterpolator()).start();
-                                if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), 1.0f);
                                 return true;
                             case MotionEvent.ACTION_MOVE:
                                 float dx = event.getRawX() - startX;
@@ -1070,7 +1013,6 @@ public class MainHook implements IXposedHookLoadPackage {
                                         mCurrentOverlay.setTranslationY(dy);
                                     }
                                 }
-                                if (mGlassView != null) mGlassView.setTouchPoint(event.getX(), event.getY(), Math.min(1.0f, dist / 80f));
                                 return true;
                             case MotionEvent.ACTION_CANCEL:
                                 if (mVelocityTracker != null) {
@@ -1084,10 +1026,8 @@ public class MainHook implements IXposedHookLoadPackage {
                                     mCurrentOverlay.setTranslationX(0f);
                                     mCurrentOverlay.setTranslationY(0f);
                                 }
-                                if (mGlassView != null) mGlassView.clearTouchPoint();
                                 return true;
                             case MotionEvent.ACTION_UP:
-                                if (mGlassView != null) mGlassView.clearTouchPoint();
                                 v.animate().scaleX(1f).scaleY(1f)
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
                                 float totalDx = event.getRawX() - startX;
@@ -1192,10 +1132,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 // 记录该应用的最后显示时间（应用级别冷却）
                 mAppCooldownMap.put(sbn.getPackageName(), SystemClock.elapsedRealtime());
 
-                // 首次截屏+模糊
-                updateBackground();
-                startBackgroundUpdate();
-
                 startEnterAnimation(contentContainer);
                 mAutoDismissRunnable = () -> {
                     dismissOverlayAnimated(1);
@@ -1260,212 +1196,8 @@ public class MainHook implements IXposedHookLoadPackage {
         });
     }
 
-    private Bitmap captureScreenBackground() {
-        try {
-            Class<?> scClass = Class.forName("android.view.SurfaceControl");
-            Bitmap screenshot = null;
-            try {
-                screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot");
-            } catch (Throwable t1) {
-                try {
-                    screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot", WIN_W, WIN_H);
-                } catch (Throwable t2) {
-                    try {
-                        Object rect = android.graphics.Rect.class.getConstructor(int.class, int.class, int.class, int.class)
-                            .newInstance(WIN_X, WIN_Y, WIN_X + WIN_W, WIN_Y + WIN_H);
-                        screenshot = (Bitmap) XposedHelpers.callStaticMethod(scClass, "screenshot", rect);
-                    } catch (Throwable t3) {
-                        return null;
-                    }
-                }
-            }
-            if (screenshot != null) {
-                int x = WIN_X, y = WIN_Y, w = WIN_W, h = WIN_H;
-                if (x + w > screenshot.getWidth()) w = screenshot.getWidth() - x;
-                if (y + h > screenshot.getHeight()) h = screenshot.getHeight() - y;
-                if (w > 0 && h > 0) {
-                    Bitmap cropped = Bitmap.createBitmap(screenshot, x, y, w, h);
-                    screenshot.recycle();
-                    return cropped;
-                }
-                return screenshot;
-            }
-        } catch (Throwable t) {
-        }
-        return null;
-    }
-
-    private Bitmap fastBlur(Bitmap input) {
-        if (input == null) return null;
-        android.renderscript.RenderScript rs = null;
-        android.renderscript.ScriptIntrinsicBlur blur = null;
-        android.renderscript.Allocation inputAlloc = null;
-        android.renderscript.Allocation outputAlloc = null;
-        Bitmap small = null;
-        Bitmap blurredSmall = null;
-        try {
-            int w = input.getWidth(), h = input.getHeight();
-            int smallW = Math.max(1, w / BLUR_SCALE_FACTOR);
-            int smallH = Math.max(1, h / BLUR_SCALE_FACTOR);
-            small = Bitmap.createScaledBitmap(input, smallW, smallH, false);
-            rs = android.renderscript.RenderScript.create(mContext);
-            inputAlloc = android.renderscript.Allocation.createFromBitmap(rs, small);
-            outputAlloc = android.renderscript.Allocation.createTyped(rs, inputAlloc.getType());
-            blur = android.renderscript.ScriptIntrinsicBlur.create(
-                rs, android.renderscript.Element.U8_4(rs));
-            blur.setRadius(BLUR_RADIUS);
-            blur.setInput(inputAlloc);
-            blur.forEach(outputAlloc);
-            blurredSmall = Bitmap.createBitmap(smallW, smallH, small.getConfig());
-            outputAlloc.copyTo(blurredSmall);
-            Bitmap result = Bitmap.createScaledBitmap(blurredSmall, w, h, true);
-            // 叠加磨砂噪点
-            try {
-                Canvas noiseCanvas = new Canvas(result);
-                Paint noisePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                noisePaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
-                noisePaint.setAlpha(18);
-                java.util.Random rnd = new java.util.Random(42);
-                for (int i = 0; i < 400; i++) {
-                    float nx = rnd.nextFloat() * w;
-                    float ny = rnd.nextFloat() * h;
-                    float nr = 0.5f + rnd.nextFloat() * 1.5f;
-                    int na = 8 + rnd.nextInt(20);
-                    noisePaint.setColor(Color.argb(na, 255, 255, 255));
-                    noiseCanvas.drawCircle(nx, ny, nr, noisePaint);
-                }
-                for (int i = 0; i < 200; i++) {
-                    float nx = rnd.nextFloat() * w;
-                    float ny = rnd.nextFloat() * h;
-                    float nr = 0.3f + rnd.nextFloat() * 0.8f;
-                    int na = 5 + rnd.nextInt(12);
-                    noisePaint.setColor(Color.argb(na, 0, 0, 0));
-                    noiseCanvas.drawCircle(nx, ny, nr, noisePaint);
-                }
-                noisePaint.setXfermode(null);
-            } catch (Throwable t) {}
-            return result;
-        } catch (Throwable t) {
-            return input;
-        } finally {
-            if (blur != null) blur.destroy();
-            if (inputAlloc != null) inputAlloc.destroy();
-            if (outputAlloc != null) outputAlloc.destroy();
-            if (rs != null) rs.destroy();
-            if (small != null) small.recycle();
-            if (blurredSmall != null) blurredSmall.recycle();
-        }
-    }
-
-    private void updateBackground() {
-        if (mGlassView == null || mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
-            return;
-        }
-        if (mContentView != null && (mContentView.getTranslationX() != 0f || mContentView.getTranslationY() != 0f)) {
-            return;
-        }
-        Bitmap screen = captureScreenBackground();
-        if (screen == null) {
-            return;
-        }
-
-        Bitmap oldBmp = mBlurredBgBitmap;
-        mBlurredBgBitmap = screen;
-
-        // Android 12+ (API 31): 使用硬件加速 RenderEffect 模糊，效果更现代、更流畅
-        if (Build.VERSION.SDK_INT >= 31) {
-            mHandler.post(() -> {
-                try {
-                    if (mGlassView != null) {
-                        // === iOS 26 Liquid Glass: blur + colorMatrix 链式组合 ===
-                        // 步骤1: 创建 ColorMatrix（去饱和 + 暖色调 + 轻微暗化）
-                        ColorMatrix cm = new ColorMatrix();
-                        cm.setSaturation(0.65f);
-
-                        // 微调 RGB 通道增加暖色调
-                        float[] matrix = cm.getArray();
-                        matrix[0] *= 1.08f;
-                        matrix[6] *= 0.96f;
-                        matrix[12] *= 0.90f;
-                        matrix[4] -= 0.04f;
-                        matrix[9] -= 0.04f;
-                        matrix[14] -= 0.04f;
-                        matrix[18] = 1.15f;
-
-                        ColorMatrixColorFilter colorFilter = new ColorMatrixColorFilter(cm);
-
-                        // 步骤2: 链式组合 blur → colorMatrix
-                        android.graphics.RenderEffect blurEffect =
-                            android.graphics.RenderEffect.createBlurEffect(
-                                BLUR_RADIUS * 2.5f, BLUR_RADIUS * 2.5f,
-                                android.graphics.Shader.TileMode.CLAMP);
-                        android.graphics.RenderEffect colorEffect =
-                            android.graphics.RenderEffect.createColorFilterEffect(colorFilter);
-                        android.graphics.RenderEffect chainEffect =
-                            android.graphics.RenderEffect.createChainEffect(colorEffect, blurEffect);
-
-                        // Apply RenderEffect directly to LiquidGlassView
-                        // No need for temporary ImageView - RenderEffect works on the View itself
-                        mGlassView.setRenderEffect(chainEffect);
-                        mGlassView.setBackgroundBitmap(screen);
-                    }
-                    if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
-                } catch (Throwable t) {
-                    fallbackBlurBackground(screen, oldBmp);
-                }
-            });
-            return;
-        }
-
-        // Android 8~11: 继续使用 RenderScript
-        Bitmap blurred = fastBlur(screen);
-        screen.recycle();
-        if (blurred == null) {
-            return;
-        }
-        mBlurredBgBitmap = blurred;
-        mHandler.post(() -> {
-            try {
-                if (mGlassView != null) {
-                    mGlassView.setBackgroundBitmap(blurred);
-                }
-                if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + ": updateBackground post error: " + t);
-            }
-        });
-    }
-
-    private void startBackgroundUpdate() {
-        stopBackgroundUpdate();
-        mBgUpdateRunnable = () -> {
-            if (mCurrentOverlay == null || mCurrentOverlay.getParent() == null) return;
-            updateBackground();
-            mHandler.postDelayed(mBgUpdateRunnable, BG_UPDATE_INTERVAL_MS);
-        };
-        mHandler.postDelayed(mBgUpdateRunnable, BG_UPDATE_INTERVAL_MS);
-    }
-
-    private void stopBackgroundUpdate() {
-        if (mBgUpdateRunnable != null) {
-            mHandler.removeCallbacks(mBgUpdateRunnable);
-            mBgUpdateRunnable = null;
-        }
-    }
-
-    private void fallbackBlurBackground(Bitmap screen, Bitmap oldBmp) {
-        Bitmap blurred = fastBlur(screen);
-        if (blurred != null) {
-            mHandler.post(() -> {
-                if (mGlassView != null) mGlassView.setBackgroundBitmap(blurred);
-                if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
-            });
-        }
-    }
-
     private void removeOverlayImmediate() {
         cancelAllAnimations();
-        stopBackgroundUpdate();
         if (mAutoDismissRunnable != null) {
             mHandler.removeCallbacks(mAutoDismissRunnable);
             mAutoDismissRunnable = null;
@@ -1505,126 +1237,10 @@ public class MainHook implements IXposedHookLoadPackage {
         } else {
         }
 
-        Bitmap oldBitmap = mBlurredBgBitmap;
-        mBlurredBgBitmap = null;
-        if (oldBitmap != null) {
-            try { if (!oldBitmap.isRecycled()) oldBitmap.recycle(); } catch (Throwable ignored) {}
-        }
         mContentView = null;
         mIconView = null;
         mTitleView = null;
         mTextView = null;
         mEnterProgress = 0f;
-        if (mGlassView != null) {
-            mGlassView.stopAnimations();
-            mGlassView = null;
-        }
-    }
-
-
-    // ============================================================
-    // 高对比度磨砂玻璃视图 - 真正能看到的液态玻璃效果
-    // 简化设计：只保留有明显视觉效果的层
-    // ============================================================
-    private class LiquidGlassView extends View {
-
-        // === iOS 26 Liquid Glass: frosted translucent panel ===
-        // Core principle: uniform translucency + background blur + subtle edge highlights
-        // NO radial gradients, NO center/edge alpha differences
-
-        private Bitmap mBgBitmap = null;
-        private final Paint mBlurPaint;
-        private final Paint mTintPaint;
-        private final Paint mEdgeLightPaint;
-        private final Paint mEdgeShadowPaint;
-        private final RectF mDrawRect;
-        private float mCornerRadius;
-        private final boolean mIsDark;
-
-        public LiquidGlassView(Context context, int w, int h, boolean isDark) {
-            super(context);
-            mCornerRadius = 28f;
-            mIsDark = isDark;
-            mDrawRect = new RectF(0, 0, w, h);
-
-            // 1. Background blur: the core of Liquid Glass
-            mBlurPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mBlurPaint.setFilterBitmap(true);
-
-            // 2. Uniform frosted tint: even across entire surface
-            // iOS 26 notifications use a consistent ~15-20% opacity frosted layer
-            mTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            int tintColor = isDark ? 0x28FFFFFF : 0x20FFFFFF; // ~16-12% uniform white
-            mTintPaint.setColor(tintColor);
-            mTintPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
-
-            // 3. Edge highlight: very subtle 1px line
-            mEdgeLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mEdgeLightPaint.setStyle(Paint.Style.STROKE);
-            mEdgeLightPaint.setStrokeWidth(1.0f);
-            mEdgeLightPaint.setColor(isDark ? 0x30FFFFFF : 0x50FFFFFF);
-            mEdgeLightPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
-
-            // 4. Edge shadow: very subtle 1px line for depth
-            mEdgeShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mEdgeShadowPaint.setStyle(Paint.Style.STROKE);
-            mEdgeShadowPaint.setStrokeWidth(1.0f);
-            mEdgeShadowPaint.setColor(isDark ? 0x20000000 : 0x15FFFFFF);
-        }
-
-        public void setCornerRadius(float radius) {
-            mCornerRadius = radius;
-            invalidate();
-        }
-
-        public void setPopGlow(float glow) {
-            // No-op: uniform glass doesn't have pop glow
-            invalidate();
-        }
-
-        public void setBackgroundBitmap(Bitmap bitmap) {
-            mBgBitmap = bitmap;
-            if (bitmap != null && !bitmap.isRecycled()) {
-                BitmapShader shader = new BitmapShader(bitmap,
-                    Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
-                mBlurPaint.setShader(shader);
-            }
-            invalidate();
-        }
-
-        public void setTouchPoint(float x, float y, float pressure) {}
-        public void clearTouchPoint() {}
-        public void stopAnimations() {}
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            android.graphics.Path clipPath = new android.graphics.Path();
-            clipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius,
-                android.graphics.Path.Direction.CW);
-            int saveCount = canvas.save();
-            canvas.clipPath(clipPath);
-
-            // 1. Background blur (the foundation)
-            if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
-                canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBlurPaint);
-            }
-
-            // 2. Uniform frosted tint (even across entire surface)
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mTintPaint);
-
-            // 3. Subtle edge highlight
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeLightPaint);
-
-            // 4. Subtle edge shadow for depth
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeShadowPaint);
-
-            canvas.restoreToCount(saveCount);
-        }
-
-        @Override
-        protected void onDetachedFromWindow() {
-            super.onDetachedFromWindow();
-            stopAnimations();
-        }
     }
 } // MainHook
