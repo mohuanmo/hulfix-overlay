@@ -1340,6 +1340,5 @@ public class MainHook implements IXposedHookLoadPackage {
         mIconView = null;
         mTitleView = null;
         mTextView = null;
-        mEnterProgress = 0f;
     }
 } // MainHook
