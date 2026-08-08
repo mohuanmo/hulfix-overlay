@@ -1528,44 +1528,29 @@ public class MainHook implements IXposedHookLoadPackage {
     // ============================================================
     private class LiquidGlassView extends View {
 
-        // === 核心绘制工具 ===
-        private final Paint mBasePaint;              // 磨砂玻璃底色（主体可见层）
-        private final Paint mTopReflectionPaint;       // 顶部白色反光带
-        private final Paint mEdgeHighlightPaint;       // 边缘高光（顶部/左侧亮边）
-        private final Paint mEdgeShadowPaint;          // 边缘阴影（底部/右侧暗边）
-        private final Paint mRadialMaskPaint;          // 径向渐变遮罩
+        // === Core paints ===
+        private final Paint mBgShaderPaint;     // Background blur bitmap
+        private final Paint mTintPaint;         // Uniform glass tint (no radial gradient)
+        private final Paint mTopGlowPaint;        // Subtle top reflection
+        private final Paint mEdgeLightPaint;      // Thin edge highlight (1px)
+        private final Paint mEdgeDarkPaint;       // Thin edge shadow (1px)
 
-        // === 高光动画 ===
-        private LinearGradient mTopReflectionGradient;
-        private final Matrix mReflectionMatrix;
-
-        // === 动画器 ===
-        private ValueAnimator mShimmerAnimator;
-
-        // === 动画状态 ===
-        private float mShimmerOffset = 0f;
-
-        // === 几何 ===
-        private final int mViewWidth;
-        private final int mViewHeight;
-        private float mCornerRadius;
-        private final boolean mIsDark;
+        // === Reusable geometry ===
         private final RectF mDrawRect;
-
-        // === Reusable draw objects (avoid allocation in onDraw) ===
+        private final RectF mTopGlowRect;
         private final android.graphics.Path mClipPath = new android.graphics.Path();
-        private final RectF mInnerRect = new RectF();
-        private final RectF mTopRect = new RectF();
-        private Paint mInnerBlurPaint = null;
 
-        // === 背景模糊位图 ===
+        // === Background blur ===
         private Bitmap mBgBitmap = null;
         private BitmapShader mBgShader = null;
-        private final Paint mBgShaderPaint;
         private boolean mBgShaderDirty = true;
 
-        // === 弹出光晕 ===
+        // === State ===
+        private float mCornerRadius;
         private float mPopGlow = 0f;
+        private final boolean mIsDark;
+        private final int mViewWidth;
+        private final int mViewHeight;
 
         public LiquidGlassView(Context context, int w, int h, boolean isDark) {
             super(context);
@@ -1574,126 +1559,44 @@ public class MainHook implements IXposedHookLoadPackage {
             mCornerRadius = 28f;
             mIsDark = isDark;
             mDrawRect = new RectF(0, 0, w, h);
-            mReflectionMatrix = new Matrix();
+            mTopGlowRect = new RectF(0, 0, w, h * 0.25f);
 
-            // 初始化各层 - 使用高对比度 alpha，确保可见
-            mBasePaint = initBasePaint(w, h, isDark);
-            mTopReflectionPaint = initTopReflection(w, h);
-            mEdgeHighlightPaint = initEdgeHighlight(isDark);
-            mEdgeShadowPaint = initEdgeShadow(isDark);
-            mRadialMaskPaint = initRadialMask(w, h, isDark);
-
+            // 1. Background blur paint
             mBgShaderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mBgShaderPaint.setFilterBitmap(true);
 
-            startShimmerAnimation();
-        }
+            // 2. Uniform glass tint - even transparency across entire surface
+            // iOS 26 Liquid Glass: consistent translucency, no radial gradient
+            mTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            int tintAlpha = isDark ? 0x30 : 0x28; // ~19-16% uniform white
+            mTintPaint.setColor(Color.argb(tintAlpha, 255, 255, 255));
+            mTintPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
 
-        // ====== 初始化各层 ======
-
-        // ====== 配置常量 ======
-        // 液态玻璃透明度配置（0-255）
-        // iOS 26 Liquid Glass: 中心半透明，有磨砂感但不遮挡背景
-        private static final int TINT_CENTER_ALPHA_LIGHT = 0x20;  // 中心：12% 不透明度（有微妙色调）
-        private static final int TINT_EDGE_ALPHA_LIGHT = 0x70;    // 边缘：44% 不透明度（明显玻璃感）
-        private static final int TINT_CENTER_ALPHA_DARK = 0x18;   // 中心：9% 不透明度
-        private static final int TINT_EDGE_ALPHA_DARK = 0x60;     // 边缘：38% 不透明度
-
-        private Paint initBasePaint(int w, int h, boolean isDark) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // iOS 26 Liquid Glass: 中心半透明，有磨砂感但不遮挡背景
-            // 边缘略实，形成玻璃厚度感
-            int centerAlpha = isDark ? TINT_CENTER_ALPHA_DARK : TINT_CENTER_ALPHA_LIGHT;
-            int edgeAlpha = isDark ? TINT_EDGE_ALPHA_DARK : TINT_EDGE_ALPHA_LIGHT;
-            int centerColor = Color.argb(centerAlpha, 255, 255, 255);
-            int edgeColor = Color.argb(edgeAlpha, 255, 255, 255);
-            // 中心点在正中央，半径覆盖整个 View
-            RadialGradient grad = new RadialGradient(
-                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.7f,
-                new int[]{centerColor, edgeColor},
-                new float[]{0f, 1f},
-                Shader.TileMode.CLAMP);
-            paint.setShader(grad);
-            // 添加模糊效果，增加磨砂玻璃质感
-            // BlurMaskFilter removed: not supported with hardware acceleration
-            // 使用 SRC_OVER 混合，让背景模糊透过来
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
-            return paint;
-        }
-
-        private Paint initTopReflection(int w, int h) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 顶部白色反光带：明显可见
-            mTopReflectionGradient = new LinearGradient(
-                0, 0, 0, h * 0.5f,
-                new int[]{0x00FFFFFF, 0x80FFFFFF, 0x30FFFFFF, 0x00FFFFFF},
-                new float[]{0f, 0.3f, 0.6f, 1f},
-                Shader.TileMode.CLAMP);
-            paint.setShader(mTopReflectionGradient);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
-            return paint;
-        }
-
-        private Paint initEdgeHighlight(boolean isDark) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(2.0f);
-            // 边缘高光：高对比度白色
-            paint.setColor(isDark ? 0xB0FFFFFF : 0xD0FFFFFF);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
-            return paint;
-        }
-
-        private Paint initEdgeShadow(boolean isDark) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.5f);
-            // 边缘阴影：高对比度暗色
-            paint.setColor(isDark ? 0x70000000 : 0x50FFFFFF);
-            return paint;
-        }
-
-        // 径向暗角配置
-        private static final int VIGNETTE_CENTER_ALPHA = 0x08;  // 中心：3% 不透明度
-        private static final int VIGNETTE_EDGE_ALPHA = 0x30;   // 边缘：19% 不透明度
-
-        private Paint initRadialMask(int w, int h, boolean isDark) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 径向暗角：中心略亮，边缘略暗，增加玻璃厚度感
-            // 使用 OVERLAY 模式，只提亮/压暗，不改变颜色
-            RadialGradient gradient = new RadialGradient(
-                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.7f,
-                new int[]{
-                    Color.argb(VIGNETTE_CENTER_ALPHA, 255, 255, 255),
-                    Color.argb((VIGNETTE_CENTER_ALPHA + VIGNETTE_EDGE_ALPHA) / 2, 255, 255, 255),
-                    Color.argb(VIGNETTE_EDGE_ALPHA, 0, 0, 0)
-                },
+            // 3. Top glow - very subtle, only 25% height
+            mTopGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            LinearGradient topGrad = new LinearGradient(
+                0, 0, 0, h * 0.25f,
+                new int[]{0x20FFFFFF, 0x08FFFFFF, 0x00FFFFFF},
                 new float[]{0f, 0.5f, 1f},
-                Shader.TileMode.CLAMP
-            );
-            paint.setShader(gradient);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
-            return paint;
+                Shader.TileMode.CLAMP);
+            mTopGlowPaint.setShader(topGrad);
+            mTopGlowPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+
+            // 4. Edge highlight - thin 1px white line, very subtle
+            mEdgeLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mEdgeLightPaint.setStyle(Paint.Style.STROKE);
+            mEdgeLightPaint.setStrokeWidth(1.0f);
+            mEdgeLightPaint.setColor(isDark ? 0x40FFFFFF : 0x60FFFFFF);
+            mEdgeLightPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+
+            // 5. Edge shadow - thin 1px dark line, very subtle
+            mEdgeDarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mEdgeDarkPaint.setStyle(Paint.Style.STROKE);
+            mEdgeDarkPaint.setStrokeWidth(1.0f);
+            mEdgeDarkPaint.setColor(isDark ? 0x30000000 : 0x20FFFFFF);
         }
 
-        // ====== 动画 ======
-
-        private void startShimmerAnimation() {
-            mShimmerAnimator = ValueAnimator.ofFloat(-0.8f, 1.8f);
-            mShimmerAnimator.setDuration(5000);
-            mShimmerAnimator.setRepeatCount(ValueAnimator.INFINITE);
-            mShimmerAnimator.setRepeatMode(ValueAnimator.RESTART);
-            mShimmerAnimator.setInterpolator(new LinearInterpolator());
-            mShimmerAnimator.addUpdateListener(anim -> {
-                mShimmerOffset = (float) anim.getAnimatedValue();
-                mReflectionMatrix.setTranslate(mShimmerOffset * mViewWidth * 0.3f, 0);
-                mTopReflectionGradient.setLocalMatrix(mReflectionMatrix);
-                invalidate();
-            });
-            mShimmerAnimator.start();
-        }
-
-        // ====== 公共接口 ======
+        // ====== Public API ======
 
         public void setCornerRadius(float radius) {
             mCornerRadius = radius;
@@ -1713,135 +1616,51 @@ public class MainHook implements IXposedHookLoadPackage {
 
         private void ensureBgShader() {
             if (mBgShaderDirty && mBgBitmap != null && !mBgBitmap.isRecycled()) {
-                if (mBgShader != null) {
-                    mBgShader = null;  // 让 GC 回收旧 Shader
-                }
                 mBgShader = new BitmapShader(mBgBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
                 mBgShaderPaint.setShader(mBgShader);
                 mBgShaderDirty = false;
             }
         }
 
-        // ====== 绘制主流程 ======
+        // ====== Draw ======
 
         @Override
         protected void onDraw(Canvas canvas) {
-            // Reuse Path to avoid allocation in onDraw
             mClipPath.reset();
             mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
-
             int saveCount = canvas.save();
             canvas.clipPath(mClipPath);
 
-            // 绘制顺序：从底到顶，每层独立可调
-            drawBackgroundBlur(canvas);   // 1. 背景模糊（最底层）
-            // drawInnerBlur removed: middle overlay layer eliminated
-            // drawBaseTint removed: eliminates the center transparent box effect
-            drawRadialMask(canvas);       // 3. 径向暗角（中心亮边缘暗）
-            drawTopReflection(canvas);    // 4. 顶部高光反射
-            drawEdgeHighlight(canvas);    // 5. 边缘亮线
-            drawEdgeShadow(canvas);       // 6. 边缘暗线
-
-            canvas.restoreToCount(saveCount);
-        }
-
-        // ====== 各层绘制方法 ======
-
-        // ====== 绘制层：从底到顶 ======
-
-        private void drawBackgroundBlur(Canvas canvas) {
-            // 第1层：背景模糊位图（最底层，必须可见）
-            // 使用 BitmapShader + drawRoundRect 实现硬件加速友好的圆角裁剪
+            // 1. Background blur (bottom layer)
             if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
                 ensureBgShader();
                 canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBgShaderPaint);
             }
+
+            // 2. Uniform glass tint - even across entire surface
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mTintPaint);
+
+            // 3. Subtle top glow (25% height, very faint)
+            int glowAlpha = (int)(24 + 20 * mPopGlow);
+            mTopGlowPaint.setAlpha(Math.min(255, glowAlpha));
+            canvas.drawRect(mTopGlowRect, mTopGlowPaint);
+
+            // 4. Edge highlight - thin 1px line
+            int lightAlpha = (int)(40 + 30 * mPopGlow);
+            mEdgeLightPaint.setAlpha(Math.min(255, lightAlpha));
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeLightPaint);
+
+            // 5. Edge shadow - thin 1px line
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeDarkPaint);
+
+            canvas.restoreToCount(saveCount);
         }
 
-        private void drawInnerBlur(Canvas canvas) {
-            // 第1.5层：中间区域的额外模糊层
-            // 让中间区域也有磨砂感，不是纯透明
-            // Note: BlurMaskFilter does not work with hardware acceleration, removed
-            if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
-                if (mInnerBlurPaint == null) {
-                    mInnerBlurPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    mInnerBlurPaint.setColor(Color.argb(0x18, 255, 255, 255)); // 9% 白色
-                }
-                float inset = 8f;
-                mInnerRect.set(
-                    mDrawRect.left + inset,
-                    mDrawRect.top + inset,
-                    mDrawRect.right - inset,
-                    mDrawRect.bottom - inset);
-                canvas.drawRoundRect(mInnerRect, Math.max(0f, mCornerRadius - inset), Math.max(0f, mCornerRadius - inset), mInnerBlurPaint);
-            }
-        }
+        // ====== Touch point (no-op, kept for compatibility) ======
+        public void setTouchPoint(float x, float y, float pressure) {}
+        public void clearTouchPoint() {}
 
-        private void drawBaseTint(Canvas canvas) {
-            // 第2层：半透明色调叠加（给玻璃着色，不覆盖背景）
-            // mBasePaint 已包含 RadialGradient，中心更透明，边缘更实
-            // 使用 drawRoundRect 确保和圆角一致
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBasePaint);
-        }
-
-        // 顶部高光配置
-        private static final int REFLECTION_BASE_ALPHA = 40;   // 基础透明度
-        private static final int REFLECTION_GLOW_ALPHA = 30;   // 弹出时额外亮度
-        private static final float REFLECTION_HEIGHT_RATIO = 0.30f;  // 只画顶部 30%
-
-        private void drawTopReflection(Canvas canvas) {
-            // 顶部高光：模拟环境光在玻璃表面的反射
-            int baseAlpha = REFLECTION_BASE_ALPHA + (int)(REFLECTION_GLOW_ALPHA * mPopGlow);
-            mTopReflectionPaint.setAlpha(Math.min(255, baseAlpha));
-            mTopRect.set(0, 0, mViewWidth, mViewHeight * REFLECTION_HEIGHT_RATIO);
-            canvas.drawRect(mTopRect, mTopReflectionPaint);
-        }
-
-        private void drawRadialMask(Canvas canvas) {
-            // 径向遮罩：微妙，不抢眼
-            // 使用 drawRoundRect 确保和圆角一致
-            int baseAlpha = (int)(60 + 30 * mPopGlow);
-            mRadialMaskPaint.setAlpha(Math.min(255, baseAlpha));
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mRadialMaskPaint);
-        }
-
-        // 边缘高光配置
-        private static final int HIGHLIGHT_BASE_ALPHA = 60;   // 基础透明度
-        private static final int HIGHLIGHT_GLOW_ALPHA = 25;   // 弹出时额外亮度
-        private static final float HIGHLIGHT_STROKE_WIDTH = 1.5f;
-
-        private void drawEdgeHighlight(Canvas canvas) {
-            // 边缘高光：模拟玻璃边缘的折射反光
-            // 非常细，只在弹出时稍微明显
-            int baseAlpha = HIGHLIGHT_BASE_ALPHA + (int)(HIGHLIGHT_GLOW_ALPHA * mPopGlow);
-            mEdgeHighlightPaint.setAlpha(Math.min(255, baseAlpha));
-            // 直接绘制到 mDrawRect，圆角由 Paint 的 Shader/效果处理
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeHighlightPaint);
-        }
-
-        // 边缘阴影配置
-        private static final int SHADOW_BASE_ALPHA = 80;   // 基础透明度
-        private static final float SHADOW_STROKE_WIDTH = 1.0f;
-
-        private void drawEdgeShadow(Canvas canvas) {
-            // 边缘阴影：增加玻璃的厚度感和立体感
-            // 比高光更暗，形成对比
-            mEdgeShadowPaint.setAlpha(SHADOW_BASE_ALPHA);
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeShadowPaint);
-        }
-
-        // Touch Dent 层已移除，保留空方法避免编译错误
-        public void setTouchPoint(float x, float y, float pressure) {
-            // no-op: touch dent layer removed in v27.5.4
-        }
-
-        public void clearTouchPoint() {
-            // no-op: touch dent layer removed in v27.5.4
-        }
-
-        public void stopAnimations() {
-            if (mShimmerAnimator != null) { mShimmerAnimator.cancel(); mShimmerAnimator = null; }
-        }
+        public void stopAnimations() {}
 
         @Override
         protected void onDetachedFromWindow() {
