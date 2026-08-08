@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window geometry (absolute px, tuned for the specific tablet landscape) -->
+    <dimen name="win_x">1386px</dimen>
+    <dimen name="win_y">77px</dimen>
+    <dimen name="win_w">673px</dimen>
+    <dimen name="win_h">119px</dimen>
+
+    <!-- Corner radius -->
+    <dimen name="corner_radius">28px</dimen>
+    <dimen name="corner_radius_full">59.5px</dimen>
+
+    <!-- Elevation -->
+    <dimen name="window_elevation">16px</dimen>
+
+    <!-- Icon -->
+    <dimen name="icon_size">44px</dimen>
+
+    <!-- Content padding -->
+    <dimen name="content_pad_h">28px</dimen>
+    <dimen name="content_pad_v">18px</dimen>
+
+    <!-- Text spacing -->
+    <dimen name="text_margin_start">14px</dimen>
+
+    <!-- Text sizes -->
+    <dimen name="title_text_size">14px</dimen>
+    <dimen name="content_text_size">12px</dimen>
+
+    <!-- Blur -->
+    <dimen name="blur_radius">22px</dimen>
+    <integer name="blur_scale_factor">4</integer>
+
+    <!-- Animation -->
+    <dimen name="enter_trans_x_max">1346px</dimen>
+    <dimen name="enter_trans_y_max">357px</dimen>
+    <dimen name="title_enter_offset">20px</dimen>
+    <dimen name="content_enter_offset">16px</dimen>
+
+    <!-- Touch feedback -->
+    <dimen name="touch_press_scale">0.97</dimen>
+    <dimen name="swipe_alpha_dist">300px</dimen>
+
+    <!-- Edge stroke -->
+    <dimen name="edge_highlight_width">2px</dimen>
+    <dimen name="edge_shadow_width">1.5px</dimen>
+    <dimen name="inner_blur_inset">8px</dimen>
+    <dimen name="inner_blur_radius">12px</dimen>
+
+    <!-- Reflection -->
+    <dimen name="reflection_height_ratio">0.30</dimen>
+    <dimen name="shimmer_translate_ratio">0.3</dimen>
+</resources>
