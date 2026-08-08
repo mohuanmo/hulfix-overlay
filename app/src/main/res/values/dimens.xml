@@ -8,10 +8,6 @@
 
     <!-- Corner radius -->
     <dimen name="corner_radius">28px</dimen>
-    <dimen name="corner_radius_full">59.5px</dimen>
-
-    <!-- Elevation -->
-    <dimen name="window_elevation">16px</dimen>
 
     <!-- Icon -->
     <dimen name="icon_size">44px</dimen>

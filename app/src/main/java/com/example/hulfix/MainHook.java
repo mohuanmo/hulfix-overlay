@@ -622,7 +622,7 @@ public class MainHook implements IXposedHookLoadPackage {
         view.setAlpha(0f);
         view.setTranslationX(WIN_W * 2.0f);   // 向右偏移 2 倍宽度，确保完全在屏幕外
         view.setTranslationY(-WIN_H * 3.0f);  // 向上偏移 3 倍高度，从远处斜上方进入
-        view.setScaleX(0.0f);                  // 完全无体积，像未凝聚的液态
+        view.setScaleX(0.0f);
         view.setScaleY(0.0f);
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         // 内容层初始完全隐藏
@@ -637,67 +637,46 @@ public class MainHook implements IXposedHookLoadPackage {
             float t = (float) anim.getAnimatedValue();
             mEnterProgress = t;
 
-            // === Liquid Glass 弹出动画：从边缘流淌 → 凝聚成形 → 膨胀展开 → 回弹稳定 ===
-            float containerAlpha, containerScale, cornerRadius, popGlow;
-            float transX, transY;  // 位移
+            float containerAlpha, containerScale;
+            float transX, transY;
 
             if (t < 0.15f) {
-                // 阶段1：边缘涌现（0~105ms）—— 液体从远处"渗透"进来
                 float p = t / 0.15f;
-                float ease = p * p * (3f - 2f * p); // smoothstep
-                containerAlpha = 0.0f + 0.20f * ease;       // 0 → 0.20，极淡地出现
-                containerScale = 0.0f + 0.12f * ease;       // 0 → 0.12，从无到有凝聚
-                // 从远处滑入：translationX 从 2*WIN_W → 0，translationY 从 -3*WIN_H → 0
+                float ease = p * p * (3f - 2f * p);
+                containerAlpha = 0.0f + 0.20f * ease;
+                containerScale = 0.0f + 0.12f * ease;
                 transX = WIN_W * 2.0f * (1f - ease);
                 transY = -WIN_H * 3.0f * (1f - ease);
-                cornerRadius = WIN_H * 0.5f; // 保持完全圆形（水滴状）
-                popGlow = 0f;
             } else if (t < 0.40f) {
-                // 阶段2：流淌凝聚（105~280ms）—— 液体继续滑入并快速凝聚
                 float p = (t - 0.15f) / 0.25f;
                 float ease = p * p * (3f - 2f * p);
-                // 弹性滑入：用 spring 让到达目标位置时有轻微回弹
                 float spring = (float)(1.0 - Math.exp(-4.0 * p) * Math.cos(6.0 * p));
-                containerAlpha = 0.20f + 0.55f * spring;      // 0.20 → 0.75
-                containerScale = 0.12f + 0.58f * spring;      // 0.12 → 0.70
-                // 位移：从远处平滑到目标位置
+                containerAlpha = 0.20f + 0.55f * spring;
+                containerScale = 0.12f + 0.58f * spring;
                 float posProgress = Math.min(1f, spring);
                 transX = WIN_W * 2.0f * (1f - posProgress);
                 transY = -WIN_H * 3.0f * (1f - posProgress);
-                cornerRadius = WIN_H * 0.5f * (1f - p * 0.4f); // 开始变平
-                popGlow = p * 0.3f; // 光晕开始微亮
             } else if (t < 0.60f) {
-                // 阶段3：膨胀展开（245~420ms）—— 水滴落在玻璃上扩散
                 float p = (t - 0.35f) / 0.25f;
-                // spring-like overshoot: 快速冲过目标再回弹
                 float spring = (float)(1.0 - Math.exp(-5.0 * p) * Math.cos(8.0 * p));
-                containerAlpha = 0.75f + 0.25f * spring;      // 0.75 → 1.0
-                containerScale = 0.70f + 0.45f * spring;      // 0.70 → 1.15 overshoot
-                transX = 0f; // 已到达目标位置
+                containerAlpha = 0.75f + 0.25f * spring;
+                containerScale = 0.70f + 0.45f * spring;
+                transX = 0f;
                 transY = 0f;
-                cornerRadius = WIN_H * 0.5f * (1f - 0.4f - p * 0.55f); // 继续变平
-                popGlow = (float)Math.sin(p * Math.PI) * 0.95f; // 光晕在膨胀时最亮
             } else if (t < 0.82f) {
-                // 阶段4：表面张力回弹（420~574ms）—— 液体表面张力让玻璃稳定
                 float p = (t - 0.60f) / 0.22f;
                 float ease = p * p * (3f - 2f * p);
-                // 从 overshoot 回弹：1.15 → 0.96 → 1.03 → 1.0
                 float decay = (float)Math.exp(-3.5 * p);
                 float oscillation = (float)Math.cos(7.0 * p);
                 containerAlpha = 1f;
                 containerScale = 1.02f + 0.13f * decay * oscillation - 0.02f * ease;
                 transX = 0f; transY = 0f;
-                cornerRadius = 28f + (WIN_H * 0.5f - 28f) * 0.08f * (1f - ease); // 接近最终圆角
-                popGlow = 0.95f * (1f - ease); // 光晕逐渐消散
             } else {
-                // 阶段5：平静定型（574~700ms）—— 完全稳定
                 float p = (t - 0.82f) / 0.18f;
                 float ease = p * p * (3f - 2f * p);
                 containerAlpha = 1f;
-                containerScale = 1.0f + 0.008f * (1f - ease); // 从 1.008 平滑到 1.0
+                containerScale = 1.0f + 0.008f * (1f - ease);
                 transX = 0f; transY = 0f;
-                cornerRadius = 28f;
-                popGlow = 0f;
             }
 
             view.setAlpha(containerAlpha);
@@ -706,7 +685,7 @@ public class MainHook implements IXposedHookLoadPackage {
             view.setTranslationX(transX);
             view.setTranslationY(transY);
 
-            // === 内容分层浮现：像从玻璃内部浮出，比容器更晚 ===
+            // 内容分层浮现
             // 图标：t=0.25 开始，带弹性浮出
             if (mIconView != null && t > 0.25f) {
                 float ip = Math.min(1f, (t - 0.25f) / 0.35f);
@@ -882,18 +861,9 @@ public class MainHook implements IXposedHookLoadPackage {
                 int textColorPrimary = isDark ? 0xFFFFFFFF : 0xFF000000;
                 int textColorSecondary = isDark ? 0xFFCCCCCC : 0xFF333333;
 
-                // === 根容器：FrameLayout（系统圆角阴影 + 裁切）===
+                // === 根容器：FrameLayout ===
                 FrameLayout root = new FrameLayout(mContext);
                 root.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
-                // 使用系统 Elevation 画圆角阴影（比 BlurMaskFilter 更可靠）
-                root.setElevation(16f);
-                root.setOutlineProvider(new ViewOutlineProvider() {
-                    @Override
-                    public void getOutline(View view, Outline outline) {
-                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
-                    }
-                });
-                root.setClipToOutline(true);
 
                 // === 内容容器（可移动）===
                 LinearLayout contentContainer = new LinearLayout(mContext);
@@ -901,8 +871,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 contentContainer.setPadding(28, 18, 28, 18);
                 contentContainer.setGravity(Gravity.CENTER_VERTICAL);
                 contentContainer.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
-                // 硬件层会绕过父视图 ClipToOutline，改为 NONE 让 root 统一裁剪
-                contentContainer.setLayerType(View.LAYER_TYPE_NONE, null);
 
                 ImageView iconView = new ImageView(mContext);
                 android.graphics.drawable.Icon icon = notification.getSmallIcon();
