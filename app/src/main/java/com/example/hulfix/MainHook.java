@@ -607,6 +607,8 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
                     });
             } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+        }
     }
 
     private void cancelAllAnimations() {
