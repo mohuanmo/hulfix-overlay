@@ -630,9 +630,6 @@ public class MainHook implements IXposedHookLoadPackage {
             mCurrentOverlay.setTranslationY(0f);
             mCurrentOverlay.setScaleX(1f);
             mCurrentOverlay.setScaleY(1f);
-            // pivot 固定为中心，不再在动画中频繁修改
-            mCurrentOverlay.setPivotX(WIN_W * 0.5f);
-            mCurrentOverlay.setPivotY(WIN_H * 0.5f);
         }
     }
 
@@ -730,44 +727,31 @@ public class MainHook implements IXposedHookLoadPackage {
         mOverlayState = OverlayState.EXITING;
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-        // 内容层先收回（Stagger 反向）
-        if (mTextView != null) {
-            mTextView.animate().alpha(0f).setDuration(70).start();
-        }
-        if (mTitleView != null) {
-            mTitleView.animate().alpha(0f).translationX(-12f).setDuration(90).setStartDelay(20).start();
-        }
-        if (mIconView != null) {
-            mIconView.animate().alpha(0f).scaleX(0.4f).scaleY(0.4f).setDuration(90).setStartDelay(40).start();
-        }
-
-        // pivot 固定为中心，通过 translation 实现方向感，避免 pivot 跳变
-        float extraTransX = 0f, extraTransY = 0f;
+        // 原生平移消失：根据方向平移出屏幕
+        float endTransX = 0f, endTransY = 0f;
         switch (exitDirection) {
             case 0: // 左滑
-                extraTransX = -WIN_W * 0.5f;
+                endTransX = -WIN_W * 1.5f;
                 break;
             case 1: // 上滑
-                extraTransY = -WIN_H * 0.5f;
+                endTransY = -WIN_H * 1.5f;
                 break;
             case 2: // 右滑
-                extraTransX = WIN_W * 0.5f;
+                endTransX = WIN_W * 1.5f;
                 break;
             default: // 兜底：上滑
-                extraTransY = -WIN_H * 0.5f;
+                endTransY = -WIN_H * 1.5f;
                 break;
         }
 
         AnimatorSet exitSet = new AnimatorSet();
-        ObjectAnimator scaleX = ObjectAnimator.ofFloat(view, "scaleX", 1f, 0f);
-        ObjectAnimator scaleY = ObjectAnimator.ofFloat(view, "scaleY", 1f, 0f);
         ObjectAnimator alpha = ObjectAnimator.ofFloat(view, "alpha", 1f, 0f);
-        ObjectAnimator transX = ObjectAnimator.ofFloat(view, "translationX", view.getTranslationX(), extraTransX);
-        ObjectAnimator transY = ObjectAnimator.ofFloat(view, "translationY", view.getTranslationY(), extraTransY);
+        ObjectAnimator transX = ObjectAnimator.ofFloat(view, "translationX", view.getTranslationX(), endTransX);
+        ObjectAnimator transY = ObjectAnimator.ofFloat(view, "translationY", view.getTranslationY(), endTransY);
 
-        exitSet.playTogether(scaleX, scaleY, alpha, transX, transY);
-        exitSet.setDuration(280);
-        exitSet.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator());
+        exitSet.playTogether(alpha, transX, transY);
+        exitSet.setDuration(250);
+        exitSet.setInterpolator(new android.view.animation.AccelerateInterpolator());
         exitSet.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -789,15 +773,13 @@ public class MainHook implements IXposedHookLoadPackage {
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
         AnimatorSet bounceSet = new AnimatorSet();
-        ObjectAnimator scaleX = ObjectAnimator.ofFloat(view, "scaleX", view.getScaleX(), 1f);
-        ObjectAnimator scaleY = ObjectAnimator.ofFloat(view, "scaleY", view.getScaleY(), 1f);
         ObjectAnimator alpha = ObjectAnimator.ofFloat(view, "alpha", view.getAlpha(), 1f);
         ObjectAnimator transX = ObjectAnimator.ofFloat(view, "translationX", view.getTranslationX(), 0f);
         ObjectAnimator transY = ObjectAnimator.ofFloat(view, "translationY", view.getTranslationY(), 0f);
 
-        bounceSet.playTogether(scaleX, scaleY, alpha, transX, transY);
-        bounceSet.setDuration(260);
-        bounceSet.setInterpolator(new android.view.animation.OvershootInterpolator(1.2f));
+        bounceSet.playTogether(alpha, transX, transY);
+        bounceSet.setDuration(250);
+        bounceSet.setInterpolator(new android.view.animation.DecelerateInterpolator());
         bounceSet.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
@@ -1028,49 +1010,27 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mTouchMaxDy = Math.max(mTouchMaxDy, Math.abs(dy));
                                 if (mVelocityTracker != null) mVelocityTracker.addMovement(event);
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
-                                // === 手势驱动收缩：滑得越远，缩得越小，像被手指捏走 ===
+                                // === 原生平移消失：跟随手指滑动，alpha 渐变 ===
                                 if (mCurrentOverlay != null && (lockedHorizontal || lockedVertical)) {
                                     float progress = Math.min(1f, dist / SWIPE_DESTROY_THRESHOLD);
-                                    
-                                    // pivot 固定为中心，避免跳变；方向感通过 translation 实现
-                                    mCurrentOverlay.setPivotX(WIN_W * 0.5f);
-                                    mCurrentOverlay.setPivotY(WIN_H * 0.5f);
 
-                                    // 实时收缩：progress 0→1, scale 1→0.5, alpha 1→0.35
-                                    // 阈值增大到 140f 后，视觉反馈需要匹配，不能提前缩到看不见
-                                    float scale = 1f - progress * 0.5f;
-                                    float alpha = 1f - progress * 0.65f;
-                                    mCurrentOverlay.setScaleX(Math.max(0.5f, scale));
-                                    mCurrentOverlay.setScaleY(Math.max(0.5f, scale));
-                                    mCurrentOverlay.setAlpha(Math.max(0.35f, alpha));
-                                    
-                                    // 内容层提前淡出（Stagger 效果，增强层次感）
-                                    if (mTextView != null) {
-                                        mTextView.setAlpha(Math.max(0f, 1f - progress * 2f));
-                                    }
-                                    if (mTitleView != null) {
-                                        mTitleView.setAlpha(Math.max(0f, 1f - progress * 1.5f));
-                                    }
-                                    if (mIconView != null) {
-                                        float iconScale = Math.max(0.3f, 1f - progress * 0.8f);
-                                        mIconView.setScaleX(iconScale);
-                                        mIconView.setScaleY(iconScale);
-                                    }
-                                    
-                                    // 平移跟随手指，但随 progress 减缓（收缩占主导）
-                                    float moveFactor = 1f - progress * 0.4f;
+                                    // 平移直接跟随手指（1:1），不减缓
                                     if (lockedHorizontal) {
-                                        mCurrentOverlay.setTranslationX(dx * moveFactor);
+                                        mCurrentOverlay.setTranslationX(dx);
                                         mCurrentOverlay.setTranslationY(0);
                                     } else if (lockedVertical) {
                                         mCurrentOverlay.setTranslationX(0);
-                                        mCurrentOverlay.setTranslationY(dy * moveFactor);
+                                        mCurrentOverlay.setTranslationY(dy);
                                     }
+
+                                    // alpha 随滑动距离线性渐变
+                                    mCurrentOverlay.setAlpha(Math.max(0f, 1f - progress));
+
                                 } else if (mCurrentOverlay != null) {
                                     // 未锁定方向前，只平移+轻微透明度反馈
                                     mCurrentOverlay.setTranslationX(dx);
                                     mCurrentOverlay.setTranslationY(dy);
-                                    mCurrentOverlay.setAlpha(Math.max(0.5f, 1f - dist / 300f));
+                                    mCurrentOverlay.setAlpha(Math.max(0.5f, 1f - dist / SWIPE_DESTROY_THRESHOLD));
                                 }
                                 return true;
                             case MotionEvent.ACTION_CANCEL:
@@ -1082,27 +1042,10 @@ public class MainHook implements IXposedHookLoadPackage {
                                     .setDuration(150).setInterpolator(new OvershootInterpolator(0.5f)).start();
                                 v.setAlpha(1f);
                                 if (mCurrentOverlay != null) {
+                                    mCurrentOverlay.animate().cancel();
                                     mCurrentOverlay.setTranslationX(0f);
                                     mCurrentOverlay.setTranslationY(0f);
-                                    mCurrentOverlay.setScaleX(1f);
-                                    mCurrentOverlay.setScaleY(1f);
                                     mCurrentOverlay.setAlpha(1f);
-                                    mCurrentOverlay.setPivotX(WIN_W * 0.5f);
-                                    mCurrentOverlay.setPivotY(WIN_H * 0.5f);
-                                    // 恢复内容层
-                                    if (mIconView != null) {
-                                        mIconView.setAlpha(1f);
-                                        mIconView.setScaleX(1f);
-                                        mIconView.setScaleY(1f);
-                                    }
-                                    if (mTitleView != null) {
-                                        mTitleView.setAlpha(1f);
-                                        mTitleView.setTranslationY(0f);
-                                    }
-                                    if (mTextView != null) {
-                                        mTextView.setAlpha(1f);
-                                        mTextView.setTranslationY(0f);
-                                    }
                                 }
                                 return true;
                             case MotionEvent.ACTION_UP:
@@ -1131,14 +1074,12 @@ public class MainHook implements IXposedHookLoadPackage {
                                 // 点击判断：只有在没有明显移动时才判定为点击
                                 if (!hasMoved && Math.abs(totalDx) < CLICK_THRESHOLD && Math.abs(totalDy) < CLICK_THRESHOLD) {
                                     performContentClick(contentIntent);
-                                    // 点击后快速上滑消失
+                                    // 点击后平移上滑消失
                                     if (mCurrentOverlay != null) {
-                                        mCurrentOverlay.setPivotX(WIN_W * 0.5f);
-                                        mCurrentOverlay.setPivotY(0f);
                                         mCurrentOverlay.animate()
-                                            .scaleX(0f).scaleY(0f)
+                                            .translationY(-WIN_H * 1.5f)
                                             .alpha(0f)
-                                            .setDuration(180)
+                                            .setDuration(250)
                                             .setInterpolator(new DecelerateInterpolator())
                                             .withEndAction(() -> removeOverlayImmediate())
                                             .start();
@@ -1161,13 +1102,24 @@ public class MainHook implements IXposedHookLoadPackage {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
                                     }
-                                    // 从当前收缩状态快速收尾到 0
+                                    // 从当前位置继续平移出屏幕
                                     if (mCurrentOverlay != null) {
                                         cancelAllAnimations();
+                                        float endTransX = mCurrentOverlay.getTranslationX();
+                                        float endTransY = mCurrentOverlay.getTranslationY();
+                                        // 根据滑动方向决定出屏方向
+                                        if (isHorizontal) {
+                                            endTransX = totalDx > 0 ? WIN_W * 1.5f : -WIN_W * 1.5f;
+                                            endTransY = 0;
+                                        } else {
+                                            endTransX = 0;
+                                            endTransY = -WIN_H * 1.5f;
+                                        }
                                         mCurrentOverlay.animate()
-                                            .scaleX(0f).scaleY(0f)
+                                            .translationX(endTransX)
+                                            .translationY(endTransY)
                                             .alpha(0f)
-                                            .setDuration(100)
+                                            .setDuration(200)
                                             .setInterpolator(new DecelerateInterpolator())
                                             .withEndAction(() -> removeOverlayImmediate())
                                             .start();
