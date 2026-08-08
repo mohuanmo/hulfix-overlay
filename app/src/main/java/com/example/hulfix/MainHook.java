@@ -1598,7 +1598,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         @Override
         protected void onDraw(Canvas canvas) {
-            Path clipPath = new Path();
+            android.graphics.Path clipPath = new android.graphics.Path();
             clipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius,
                 android.graphics.Path.Direction.CW);
             int saveCount = canvas.save();
