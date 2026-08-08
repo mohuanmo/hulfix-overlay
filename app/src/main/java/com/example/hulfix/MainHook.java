@@ -788,21 +788,40 @@ public class MainHook implements IXposedHookLoadPackage {
         cancelAllAnimations();
         view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-        float currentTransX = view.getTranslationX();
-        float currentAlpha = view.getAlpha();
-
         AnimatorSet bounceSet = new AnimatorSet();
-        ObjectAnimator transX = ObjectAnimator.ofFloat(view, "translationX", currentTransX, 0f);
-        ObjectAnimator alpha = ObjectAnimator.ofFloat(view, "alpha", currentAlpha, 1f);
+        ObjectAnimator scaleX = ObjectAnimator.ofFloat(view, "scaleX", view.getScaleX(), 1f);
+        ObjectAnimator scaleY = ObjectAnimator.ofFloat(view, "scaleY", view.getScaleY(), 1f);
+        ObjectAnimator alpha = ObjectAnimator.ofFloat(view, "alpha", view.getAlpha(), 1f);
+        ObjectAnimator transX = ObjectAnimator.ofFloat(view, "translationX", view.getTranslationX(), 0f);
+        ObjectAnimator transY = ObjectAnimator.ofFloat(view, "translationY", view.getTranslationY(), 0f);
 
-        bounceSet.playTogether(transX, alpha);
+        bounceSet.playTogether(scaleX, scaleY, alpha, transX, transY);
         bounceSet.setDuration(320);
         bounceSet.setInterpolator(new android.view.animation.OvershootInterpolator(1.8f));
         bounceSet.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(android.animation.Animator animation) {
                 view.setLayerType(View.LAYER_TYPE_NONE, null);
                 view.setTranslationX(0f);
+                view.setTranslationY(0f);
+                view.setScaleX(1f);
+                view.setScaleY(1f);
                 view.setAlpha(1f);
+                view.setPivotX(WIN_W * 0.5f);
+                view.setPivotY(WIN_H * 0.5f);
+                // 恢复内容层
+                if (mIconView != null) {
+                    mIconView.setAlpha(1f);
+                    mIconView.setScaleX(1f);
+                    mIconView.setScaleY(1f);
+                }
+                if (mTitleView != null) {
+                    mTitleView.setAlpha(1f);
+                    mTitleView.setTranslationY(0f);
+                }
+                if (mTextView != null) {
+                    mTextView.setAlpha(1f);
+                    mTextView.setTranslationY(0f);
+                }
             }
         });
         mBounceAnim = bounceSet;
@@ -1021,24 +1040,56 @@ public class MainHook implements IXposedHookLoadPackage {
                                 mTouchMaxDy = Math.max(mTouchMaxDy, Math.abs(dy));
                                 if (mVelocityTracker != null) mVelocityTracker.addMovement(event);
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
-                                // Touch feedback on root overlay, not contentContainer
-                                if (mCurrentOverlay != null) {
-                                    mCurrentOverlay.setAlpha(Math.max(0.5f, 1f - dist / 300f));
-                                }
-                                // === 严格方向锁定移动 ===
-                                // 水平锁定：只移动 X 轴，Y 轴固定为 0
-                                // 垂直锁定：只移动 Y 轴，X 轴固定为 0
-                                if (mCurrentOverlay != null) {
+                                // === 手势驱动收缩：滑得越远，缩得越小，像被手指捏走 ===
+                                if (mCurrentOverlay != null && (lockedHorizontal || lockedVertical)) {
+                                    float progress = Math.min(1f, dist / SWIPE_DESTROY_THRESHOLD);
+                                    
+                                    // 根据滑动方向设置 pivot（向该方向边缘收缩）
+                                    if (lockedHorizontal && dx < 0) { // 左滑
+                                        mCurrentOverlay.setPivotX(0f);
+                                        mCurrentOverlay.setPivotY(WIN_H * 0.5f);
+                                    } else if (lockedHorizontal && dx > 0) { // 右滑
+                                        mCurrentOverlay.setPivotX(WIN_W);
+                                        mCurrentOverlay.setPivotY(WIN_H * 0.5f);
+                                    } else if (lockedVertical && dy < 0) { // 上滑
+                                        mCurrentOverlay.setPivotX(WIN_W * 0.5f);
+                                        mCurrentOverlay.setPivotY(0f);
+                                    }
+                                    
+                                    // 实时收缩：progress 0→1, scale 1→0.15, alpha 1→0.2
+                                    float scale = 1f - progress * 0.85f;
+                                    float alpha = 1f - progress * 0.8f;
+                                    mCurrentOverlay.setScaleX(Math.max(0.15f, scale));
+                                    mCurrentOverlay.setScaleY(Math.max(0.15f, scale));
+                                    mCurrentOverlay.setAlpha(Math.max(0.2f, alpha));
+                                    
+                                    // 内容层提前淡出（Stagger 效果，增强层次感）
+                                    if (mTextView != null) {
+                                        mTextView.setAlpha(Math.max(0f, 1f - progress * 2f));
+                                    }
+                                    if (mTitleView != null) {
+                                        mTitleView.setAlpha(Math.max(0f, 1f - progress * 1.5f));
+                                    }
+                                    if (mIconView != null) {
+                                        float iconScale = Math.max(0.3f, 1f - progress * 0.8f);
+                                        mIconView.setScaleX(iconScale);
+                                        mIconView.setScaleY(iconScale);
+                                    }
+                                    
+                                    // 平移跟随手指，但随 progress 减缓（收缩占主导）
+                                    float moveFactor = 1f - progress * 0.4f;
                                     if (lockedHorizontal) {
-                                        mCurrentOverlay.setTranslationX(dx);
+                                        mCurrentOverlay.setTranslationX(dx * moveFactor);
                                         mCurrentOverlay.setTranslationY(0);
                                     } else if (lockedVertical) {
                                         mCurrentOverlay.setTranslationX(0);
-                                        mCurrentOverlay.setTranslationY(dy);
-                                    } else {
-                                        mCurrentOverlay.setTranslationX(dx);
-                                        mCurrentOverlay.setTranslationY(dy);
+                                        mCurrentOverlay.setTranslationY(dy * moveFactor);
                                     }
+                                } else if (mCurrentOverlay != null) {
+                                    // 未锁定方向前，只平移+轻微透明度反馈
+                                    mCurrentOverlay.setTranslationX(dx);
+                                    mCurrentOverlay.setTranslationY(dy);
+                                    mCurrentOverlay.setAlpha(Math.max(0.5f, 1f - dist / 300f));
                                 }
                                 return true;
                             case MotionEvent.ACTION_CANCEL:
@@ -1052,6 +1103,25 @@ public class MainHook implements IXposedHookLoadPackage {
                                 if (mCurrentOverlay != null) {
                                     mCurrentOverlay.setTranslationX(0f);
                                     mCurrentOverlay.setTranslationY(0f);
+                                    mCurrentOverlay.setScaleX(1f);
+                                    mCurrentOverlay.setScaleY(1f);
+                                    mCurrentOverlay.setAlpha(1f);
+                                    mCurrentOverlay.setPivotX(WIN_W * 0.5f);
+                                    mCurrentOverlay.setPivotY(WIN_H * 0.5f);
+                                    // 恢复内容层
+                                    if (mIconView != null) {
+                                        mIconView.setAlpha(1f);
+                                        mIconView.setScaleX(1f);
+                                        mIconView.setScaleY(1f);
+                                    }
+                                    if (mTitleView != null) {
+                                        mTitleView.setAlpha(1f);
+                                        mTitleView.setTranslationY(0f);
+                                    }
+                                    if (mTextView != null) {
+                                        mTextView.setAlpha(1f);
+                                        mTextView.setTranslationY(0f);
+                                    }
                                 }
                                 return true;
                             case MotionEvent.ACTION_UP:
@@ -1073,51 +1143,71 @@ public class MainHook implements IXposedHookLoadPackage {
                                 else if (lockedVertical) isHorizontal = false;
                                 else isHorizontal = Math.abs(totalDx) > Math.abs(totalDy);
 
-                                // 优先判断滑动销毁（需要方向锁定或明显移动）
-                                boolean significantMove = hasMoved || Math.abs(totalDx) > SWIPE_DESTROY_THRESHOLD || Math.abs(totalDy) > SWIPE_DESTROY_THRESHOLD;
-
-                                if (significantMove && totalDy < -SWIPE_DESTROY_THRESHOLD && !isHorizontal) {
-                                    if (mCurrentKey != null) {
-                                        mUserDismissedKey = mCurrentKey;
-                                        mUserDismissTime = SystemClock.elapsedRealtime();
-                                    }
-                                    dismissOverlayAnimated(1); return true;
-                                }
-                                if (significantMove && totalDx < -SWIPE_DESTROY_THRESHOLD && isHorizontal) {
-                                    if (mCurrentKey != null) {
-                                        mUserDismissedKey = mCurrentKey;
-                                        mUserDismissTime = SystemClock.elapsedRealtime();
-                                    }
-                                    dismissOverlayAnimated(0); return true;
-                                }
-                                if (significantMove && totalDx > SWIPE_DESTROY_THRESHOLD && isHorizontal) {
-                                    if (mCurrentKey != null) {
-                                        mUserDismissedKey = mCurrentKey;
-                                        mUserDismissTime = SystemClock.elapsedRealtime();
-                                    }
-                                    dismissOverlayAnimated(2); return true;
-                                }
-                                if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
-                                    expandStatusBar(); removeOverlayImmediate(); return true;
-                                }
+                                // 计算滑动进度
+                                float finalDist = (float) Math.sqrt(totalDx * totalDx + totalDy * totalDy);
+                                boolean crossedThreshold = finalDist >= SWIPE_DESTROY_THRESHOLD;
 
                                 // 点击判断：只有在没有明显移动时才判定为点击
                                 if (!hasMoved && Math.abs(totalDx) < CLICK_THRESHOLD && Math.abs(totalDy) < CLICK_THRESHOLD) {
                                     performContentClick(contentIntent);
-                                    dismissOverlayAnimated(1);
+                                    // 点击后快速上滑消失
+                                    if (mCurrentOverlay != null) {
+                                        mCurrentOverlay.setPivotX(WIN_W * 0.5f);
+                                        mCurrentOverlay.setPivotY(0f);
+                                        mCurrentOverlay.animate()
+                                            .scaleX(0f).scaleY(0f)
+                                            .alpha(0f)
+                                            .setDuration(180)
+                                            .setInterpolator(new DecelerateInterpolator())
+                                            .withEndAction(() -> removeOverlayImmediate())
+                                            .start();
+                                    } else {
+                                        removeOverlayImmediate();
+                                    }
                                     return true;
                                 }
 
-                                // 有滑动意图但未达到阈值，回弹
+                                // 下拉展开通知栏（垂直方向且向下滑动足够距离）
+                                if (totalDy > PULLDOWN_THRESHOLD && !isHorizontal) {
+                                    expandStatusBar();
+                                    removeOverlayImmediate();
+                                    return true;
+                                }
+
+                                // 滑动销毁（已经滑过阈值）
+                                if (crossedThreshold) {
+                                    if (mCurrentKey != null) {
+                                        mUserDismissedKey = mCurrentKey;
+                                        mUserDismissTime = SystemClock.elapsedRealtime();
+                                    }
+                                    // 从当前收缩状态快速收尾到 0
+                                    if (mCurrentOverlay != null) {
+                                        cancelAllAnimations();
+                                        mCurrentOverlay.animate()
+                                            .scaleX(0f).scaleY(0f)
+                                            .alpha(0f)
+                                            .setDuration(100)
+                                            .setInterpolator(new DecelerateInterpolator())
+                                            .withEndAction(() -> removeOverlayImmediate())
+                                            .start();
+                                    } else {
+                                        removeOverlayImmediate();
+                                    }
+                                    return true;
+                                }
+
+                                // 有滑动意图但未达到阈值，回弹恢复
                                 boolean hasSwipeIntent = (mTouchMaxDx > SWIPE_INTENT_THRESHOLD)
                                     || (mTouchMaxDy > SWIPE_INTENT_THRESHOLD);
                                 boolean isFastFling = (Math.abs(velocityX) > MIN_FLING_VELOCITY)
                                     || (Math.abs(velocityY) > MIN_FLING_VELOCITY);
-                                if (hasSwipeIntent || isFastFling) {
-                                    if (mCurrentOverlay != null) startBounceAnimation(mCurrentOverlay, totalDx < 0 ? -1f : 1f);
+                                if ((hasSwipeIntent || isFastFling) && mCurrentOverlay != null) {
+                                    startBounceAnimation(mCurrentOverlay, totalDx < 0 ? -1f : 1f);
                                     return true;
                                 }
-                                if (mCurrentOverlay != null) startBounceAnimation(mCurrentOverlay, totalDx < 0 ? -1f : 1f);
+                                if (mCurrentOverlay != null) {
+                                    startBounceAnimation(mCurrentOverlay, totalDx < 0 ? -1f : 1f);
+                                }
                                 return true;
                         }
                         return false;
