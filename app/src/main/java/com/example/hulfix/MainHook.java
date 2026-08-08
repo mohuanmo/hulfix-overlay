@@ -1555,7 +1555,9 @@ public class MainHook implements IXposedHookLoadPackage {
 
         // === 背景模糊位图 ===
         private Bitmap mBgBitmap = null;
-        private final Paint mBgPaint;
+        private BitmapShader mBgShader = null;
+        private final Paint mBgShaderPaint;
+        private boolean mBgShaderDirty = true;
 
         // === 弹出光晕 ===
         private float mPopGlow = 0f;
@@ -1576,8 +1578,8 @@ public class MainHook implements IXposedHookLoadPackage {
             mEdgeShadowPaint = initEdgeShadow(isDark);
             mRadialMaskPaint = initRadialMask(w, h, isDark);
 
-            mBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mBgPaint.setFilterBitmap(true);
+            mBgShaderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mBgShaderPaint.setFilterBitmap(true);
 
             startShimmerAnimation();
         }
@@ -1586,21 +1588,23 @@ public class MainHook implements IXposedHookLoadPackage {
 
         // ====== 配置常量 ======
         // 液态玻璃透明度配置（0-255）
-        private static final int TINT_CENTER_ALPHA_LIGHT = 0x40;  // 中心：25% 不透明度
-        private static final int TINT_EDGE_ALPHA_LIGHT = 0x90;    // 边缘：56% 不透明度
-        private static final int TINT_CENTER_ALPHA_DARK = 0x38;   // 中心：22% 不透明度
-        private static final int TINT_EDGE_ALPHA_DARK = 0x80;     // 边缘：50% 不透明度
+        // iOS 26 Liquid Glass: 中心几乎完全透明，让背景清晰可见
+        private static final int TINT_CENTER_ALPHA_LIGHT = 0x08;  // 中心：3% 不透明度（几乎透明）
+        private static final int TINT_EDGE_ALPHA_LIGHT = 0x50;    // 边缘：31% 不透明度
+        private static final int TINT_CENTER_ALPHA_DARK = 0x06;   // 中心：2% 不透明度
+        private static final int TINT_EDGE_ALPHA_DARK = 0x40;     // 边缘：25% 不透明度
 
         private Paint initBasePaint(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // iOS 26 Liquid Glass: 中心更透明，让背景清晰可见
+            // iOS 26 Liquid Glass: 中心几乎完全透明，让背景清晰可见
             // 边缘略实，形成玻璃厚度感
             int centerAlpha = isDark ? TINT_CENTER_ALPHA_DARK : TINT_CENTER_ALPHA_LIGHT;
             int edgeAlpha = isDark ? TINT_EDGE_ALPHA_DARK : TINT_EDGE_ALPHA_LIGHT;
             int centerColor = Color.argb(centerAlpha, 255, 255, 255);
             int edgeColor = Color.argb(edgeAlpha, 255, 255, 255);
+            // 中心点在正中央，半径覆盖整个 View
             RadialGradient grad = new RadialGradient(
-                w * 0.5f, h * 0.4f, Math.max(w, h) * 0.8f,
+                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.7f,
                 new int[]{centerColor, edgeColor},
                 new float[]{0f, 1f},
                 Shader.TileMode.CLAMP);
@@ -1643,15 +1647,15 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         // 径向暗角配置
-        private static final int VIGNETTE_CENTER_ALPHA = 0x10;  // 中心：6% 不透明度
-        private static final int VIGNETTE_EDGE_ALPHA = 0x50;    // 边缘：31% 不透明度
+        private static final int VIGNETTE_CENTER_ALPHA = 0x08;  // 中心：3% 不透明度
+        private static final int VIGNETTE_EDGE_ALPHA = 0x30;   // 边缘：19% 不透明度
 
         private Paint initRadialMask(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             // 径向暗角：中心略亮，边缘略暗，增加玻璃厚度感
             // 使用 OVERLAY 模式，只提亮/压暗，不改变颜色
             RadialGradient gradient = new RadialGradient(
-                w * 0.5f, h * 0.45f, Math.max(w, h) * 0.7f,
+                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.7f,
                 new int[]{
                     Color.argb(VIGNETTE_CENTER_ALPHA, 255, 255, 255),
                     Color.argb((VIGNETTE_CENTER_ALPHA + VIGNETTE_EDGE_ALPHA) / 2, 255, 255, 255),
@@ -1696,7 +1700,19 @@ public class MainHook implements IXposedHookLoadPackage {
 
         public void setBackgroundBitmap(Bitmap bitmap) {
             mBgBitmap = bitmap;
+            mBgShaderDirty = true;
             invalidate();
+        }
+
+        private void ensureBgShader() {
+            if (mBgShaderDirty && mBgBitmap != null && !mBgBitmap.isRecycled()) {
+                if (mBgShader != null) {
+                    mBgShader = null;  // 让 GC 回收旧 Shader
+                }
+                mBgShader = new BitmapShader(mBgBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+                mBgShaderPaint.setShader(mBgShader);
+                mBgShaderDirty = false;
+            }
         }
 
         // ====== 绘制主流程 ======
@@ -1727,16 +1743,18 @@ public class MainHook implements IXposedHookLoadPackage {
 
         private void drawBackgroundBlur(Canvas canvas) {
             // 第1层：背景模糊位图（最底层，必须可见）
+            // 使用 BitmapShader + drawRoundRect 实现硬件加速友好的圆角裁剪
             if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
-                canvas.drawBitmap(mBgBitmap, null, mDrawRect, mBgPaint);
+                ensureBgShader();
+                canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBgShaderPaint);
             }
         }
 
         private void drawBaseTint(Canvas canvas) {
             // 第2层：半透明色调叠加（给玻璃着色，不覆盖背景）
             // mBasePaint 已包含 RadialGradient，中心更透明，边缘更实
-            // 不调用 setAlpha()，保持 Shader 原始透明度
-            canvas.drawRect(mDrawRect, mBasePaint);
+            // 使用 drawRoundRect 确保和圆角一致
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBasePaint);
         }
 
         // 顶部高光配置
@@ -1755,9 +1773,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
         private void drawRadialMask(Canvas canvas) {
             // 径向遮罩：微妙，不抢眼
-            int baseAlpha = (int)(90 + 40 * mPopGlow);
+            // 使用 drawRoundRect 确保和圆角一致
+            int baseAlpha = (int)(60 + 30 * mPopGlow);
             mRadialMaskPaint.setAlpha(Math.min(255, baseAlpha));
-            canvas.drawRect(mDrawRect, mRadialMaskPaint);
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mRadialMaskPaint);
         }
 
         // 边缘高光配置
@@ -1770,12 +1789,8 @@ public class MainHook implements IXposedHookLoadPackage {
             // 非常细，只在弹出时稍微明显
             int baseAlpha = HIGHLIGHT_BASE_ALPHA + (int)(HIGHLIGHT_GLOW_ALPHA * mPopGlow);
             mEdgeHighlightPaint.setAlpha(Math.min(255, baseAlpha));
-            float inset = 1.0f;
-            RectF rect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
-            canvas.drawRoundRect(rect,
-                Math.max(0f, mCornerRadius - inset),
-                Math.max(0f, mCornerRadius - inset),
-                mEdgeHighlightPaint);
+            // 直接绘制到 mDrawRect，圆角由 Paint 的 Shader/效果处理
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeHighlightPaint);
         }
 
         // 边缘阴影配置
@@ -1786,12 +1801,7 @@ public class MainHook implements IXposedHookLoadPackage {
             // 边缘阴影：增加玻璃的厚度感和立体感
             // 比高光更暗，形成对比
             mEdgeShadowPaint.setAlpha(SHADOW_BASE_ALPHA);
-            float inset = 0.5f;
-            RectF rect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
-            canvas.drawRoundRect(rect,
-                Math.max(0f, mCornerRadius - inset),
-                Math.max(0f, mCornerRadius - inset),
-                mEdgeShadowPaint);
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeShadowPaint);
         }
 
         // Touch Dent 层已移除，保留空方法避免编译错误
