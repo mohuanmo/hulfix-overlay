@@ -100,7 +100,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // 应用级别冷却：每个应用独立计时，防止同一应用通知轰炸，但不影响其他应用
     private static final Map<String, Long> mAppCooldownMap = new ConcurrentHashMap<>();
-    private static final long APP_COOLDOWN_MS = 500;
+    private static final long APP_COOLDOWN_MS = 200; // 降低冷却，允许微信等应用快速更新通知
 
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
@@ -395,11 +395,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS;
             if (userIgnored) return;
 
-            // 应用级别冷却：同一应用 500ms 内只显示一次，不影响其他应用
+            // 应用级别冷却：同一应用 200ms 内只显示一次，不影响其他应用
+            // 但对于更新通知（相同key不同内容），跳过冷却检查
             String pkg = sbn.getPackageName();
             Long lastAppTime = mAppCooldownMap.get(pkg);
             boolean appCooldown = lastAppTime != null && SystemClock.elapsedRealtime() - lastAppTime < APP_COOLDOWN_MS;
-            if (appCooldown) return;
+            // 检查是否是更新通知（相同key但内容不同）
+            boolean isUpdate = mCurrentKey != null && mCurrentKey.equals(key);
+            if (appCooldown && !isUpdate) return;
 
             boolean panelExpanded = isStatusBarExpanded();
             if (panelExpanded) return;
@@ -463,7 +466,12 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private boolean isFreshNotification(StatusBarNotification sbn) {
-        long age = System.currentTimeMillis() - sbn.getPostTime();
+        // 使用通知的 when 字段（更新时间）而非 postTime（首次发布时间）
+        // 这样更新通知（如微信从1条变成2条）不会被误判为过期
+        long when = sbn.getNotification().when;
+        long postTime = sbn.getPostTime();
+        long referenceTime = Math.max(when, postTime);
+        long age = System.currentTimeMillis() - referenceTime;
         boolean result = age <= NOTIFICATION_MAX_AGE_MS;
         return result;
     }
