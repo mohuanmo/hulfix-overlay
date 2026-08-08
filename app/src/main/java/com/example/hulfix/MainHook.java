@@ -124,7 +124,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private TextView mTitleView = null;
     private TextView mTextView = null;
     private ImageView mBgImageView = null;
-    private View mBgTintView = null;  // 径向渐变色调遮罩层（iOS 26 Liquid Glass 中心→边缘透明度渐变）
     private LiquidGlassView mGlassView = null;
     private Bitmap mBlurredBgBitmap = null;
     private Runnable mBgUpdateRunnable = null;
@@ -979,51 +978,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 root.addView(bgView);
                 mBgImageView = bgView;
 
-                // === 第1.5层：径向渐变色调遮罩（iOS 26 Liquid Glass 中心→边缘透明度渐变）===
-                View tintView = new View(mContext) {
-                    private final Paint mTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    private RadialGradient mGradient;
-
-                    @Override
-                    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-                        super.onSizeChanged(w, h, oldw, oldh);
-                        // 中心更透明，边缘更实
-                        int centerAlpha = isDark ? 0x15 : 0x10;  // 中心：约 8-10% 不透明度
-                        int edgeAlpha = isDark ? 0x50 : 0x40;    // 边缘：约 25-31% 不透明度
-                        mGradient = new RadialGradient(
-                            w * 0.5f, h * 0.45f, Math.max(w, h) * 0.65f,
-                            new int[]{
-                                Color.argb(centerAlpha, 255, 255, 255),
-                                Color.argb((centerAlpha + edgeAlpha) / 2, 255, 255, 255),
-                                Color.argb(edgeAlpha, 255, 255, 255)
-                            },
-                            new float[]{0f, 0.6f, 1f},
-                            Shader.TileMode.CLAMP
-                        );
-                        mTintPaint.setShader(mGradient);
-                        mTintPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
-                    }
-
-                    @Override
-                    protected void onDraw(Canvas canvas) {
-                        if (mGradient != null) {
-                            canvas.drawRect(0, 0, getWidth(), getHeight(), mTintPaint);
-                        }
-                    }
-                };
-                tintView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
-                // 圆角裁剪，与外层匹配
-                tintView.setClipToOutline(true);
-                tintView.setOutlineProvider(new ViewOutlineProvider() {
-                    @Override
-                    public void getOutline(View view, Outline outline) {
-                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
-                    }
-                });
-                root.addView(tintView);
-                mBgTintView = tintView;
-
-                // === 第2层：液态玻璃效果层（Shader 动态渲染）===
+                // === 第2层：液态玻璃效果层（Shader 动态渲染，包含径向渐变遮罩）===
                 LiquidGlassView glassOverlay = new LiquidGlassView(mContext, WIN_W, WIN_H, isDark);
                 glassOverlay.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 root.addView(glassOverlay);
@@ -1590,11 +1545,7 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mBgImageView != null) {
             try { mBgImageView.setRenderEffect(null); } catch (Throwable ignored) {}
         }
-        // 清除色调遮罩层
-        if (mBgTintView != null) {
-            try { mBgTintView.setAlpha(0f); } catch (Throwable ignored) {}
-            mBgTintView = null;
-        }
+
         Bitmap oldBitmap = mBlurredBgBitmap;
         mBlurredBgBitmap = null;
         if (oldBitmap != null) {
@@ -1631,6 +1582,7 @@ public class MainHook implements IXposedHookLoadPackage {
         private final Paint mBevelShadowPaint;        // 边缘倒角阴影
         private final Paint mMicroNoisePaint;         // 微观纹理
         private final Paint mCausticPaint;            // 焦散光效（玻璃聚焦效果）
+        private final Paint mRadialMaskPaint;         // 径向渐变遮罩（中心→边缘透明度变化）
 
         // === 动态纹理 ===
         private final Bitmap mMicroNoiseBitmap;
@@ -1693,6 +1645,7 @@ public class MainHook implements IXposedHookLoadPackage {
             mBevelShadowPaint = initBevelShadow(isDark);
             mMicroNoisePaint = initMicroNoise();
             mCausticPaint = initCaustic(w, h);
+            mRadialMaskPaint = initRadialMask(w, h, isDark);
 
             // 微观噪点纹理
             mMicroNoiseBitmap = createMicroNoiseBitmap(256, 256);
@@ -1811,6 +1764,26 @@ public class MainHook implements IXposedHookLoadPackage {
             // 焦散：玻璃聚焦光线的微妙光斑
             paint.setColor(0x08FFFFFF);
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+            return paint;
+        }
+
+        private Paint initRadialMask(int w, int h, boolean isDark) {
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            // 中心更透明，边缘更实
+            int centerAlpha = isDark ? 0x15 : 0x10;  // 中心：约 8-10% 不透明度
+            int edgeAlpha = isDark ? 0x50 : 0x40;    // 边缘：约 25-31% 不透明度
+            RadialGradient gradient = new RadialGradient(
+                w * 0.5f, h * 0.45f, Math.max(w, h) * 0.65f,
+                new int[]{
+                    Color.argb(centerAlpha, 255, 255, 255),
+                    Color.argb((centerAlpha + edgeAlpha) / 2, 255, 255, 255),
+                    Color.argb(edgeAlpha, 255, 255, 255)
+                },
+                new float[]{0f, 0.6f, 1f},
+                Shader.TileMode.CLAMP
+            );
+            paint.setShader(gradient);
+            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
             return paint;
         }
 
@@ -1960,7 +1933,10 @@ public class MainHook implements IXposedHookLoadPackage {
             // 8. 边缘效果（倒角 + 环境光溢色）
             drawEdgeEffects(canvas);
 
-            // 9. 触摸凹陷
+            // 9. 径向渐变遮罩（中心→边缘透明度变化）
+            drawRadialMask(canvas);
+
+            // 10. 触摸凹陷
             drawTouchDent(canvas);
 
             canvas.restoreToCount(saveCount);
@@ -2053,6 +2029,11 @@ public class MainHook implements IXposedHookLoadPackage {
                 Math.max(0f, mCornerRadius - shadowInset),
                 Math.max(0f, mCornerRadius - shadowInset),
                 mBevelShadowPaint);
+        }
+
+        private void drawRadialMask(Canvas canvas) {
+            mRadialMaskPaint.setAlpha((int)(255 * mBreathAlpha));
+            canvas.drawRect(mDrawRect, mRadialMaskPaint);
         }
 
         private void drawTouchDent(Canvas canvas) {
