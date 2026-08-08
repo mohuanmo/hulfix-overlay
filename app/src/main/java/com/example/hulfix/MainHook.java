@@ -1528,75 +1528,49 @@ public class MainHook implements IXposedHookLoadPackage {
     // ============================================================
     private class LiquidGlassView extends View {
 
-        // === Core paints ===
-        private final Paint mBgShaderPaint;     // Background blur bitmap
-        private final Paint mTintPaint;         // Uniform glass tint (no radial gradient)
-        private final Paint mTopGlowPaint;        // Subtle top reflection
-        private final Paint mEdgeLightPaint;      // Thin edge highlight (1px)
-        private final Paint mEdgeDarkPaint;       // Thin edge shadow (1px)
+        // === iOS 26 Liquid Glass: frosted translucent panel ===
+        // Core principle: uniform translucency + background blur + subtle edge highlights
+        // NO radial gradients, NO center/edge alpha differences
 
-        // === Reusable geometry ===
-        private final RectF mDrawRect;
-        private final RectF mTopGlowRect;
-        private final android.graphics.Path mClipPath = new android.graphics.Path();
-
-        // === Background blur ===
         private Bitmap mBgBitmap = null;
-        private BitmapShader mBgShader = null;
-        private boolean mBgShaderDirty = true;
-
-        // === State ===
+        private final Paint mBlurPaint;
+        private final Paint mTintPaint;
+        private final Paint mEdgeLightPaint;
+        private final Paint mEdgeShadowPaint;
+        private final RectF mDrawRect;
         private float mCornerRadius;
-        private float mPopGlow = 0f;
         private final boolean mIsDark;
-        private final int mViewWidth;
-        private final int mViewHeight;
 
         public LiquidGlassView(Context context, int w, int h, boolean isDark) {
             super(context);
-            mViewWidth = w;
-            mViewHeight = h;
             mCornerRadius = 28f;
             mIsDark = isDark;
             mDrawRect = new RectF(0, 0, w, h);
-            mTopGlowRect = new RectF(0, 0, w, h * 0.25f);
 
-            // 1. Background blur paint
-            mBgShaderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mBgShaderPaint.setFilterBitmap(true);
+            // 1. Background blur: the core of Liquid Glass
+            mBlurPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mBlurPaint.setFilterBitmap(true);
 
-            // 2. Uniform glass tint - even transparency across entire surface
-            // iOS 26 Liquid Glass: consistent translucency, no radial gradient
+            // 2. Uniform frosted tint: even across entire surface
+            // iOS 26 notifications use a consistent ~15-20% opacity frosted layer
             mTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            int tintAlpha = isDark ? 0x30 : 0x28; // ~19-16% uniform white
-            mTintPaint.setColor(Color.argb(tintAlpha, 255, 255, 255));
+            int tintColor = isDark ? 0x28FFFFFF : 0x20FFFFFF; // ~16-12% uniform white
+            mTintPaint.setColor(tintColor);
             mTintPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
 
-            // 3. Top glow - very subtle, only 25% height
-            mTopGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            LinearGradient topGrad = new LinearGradient(
-                0, 0, 0, h * 0.25f,
-                new int[]{0x20FFFFFF, 0x08FFFFFF, 0x00FFFFFF},
-                new float[]{0f, 0.5f, 1f},
-                Shader.TileMode.CLAMP);
-            mTopGlowPaint.setShader(topGrad);
-            mTopGlowPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
-
-            // 4. Edge highlight - thin 1px white line, very subtle
+            // 3. Edge highlight: very subtle 1px line
             mEdgeLightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             mEdgeLightPaint.setStyle(Paint.Style.STROKE);
             mEdgeLightPaint.setStrokeWidth(1.0f);
-            mEdgeLightPaint.setColor(isDark ? 0x40FFFFFF : 0x60FFFFFF);
+            mEdgeLightPaint.setColor(isDark ? 0x30FFFFFF : 0x50FFFFFF);
             mEdgeLightPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
 
-            // 5. Edge shadow - thin 1px dark line, very subtle
-            mEdgeDarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            mEdgeDarkPaint.setStyle(Paint.Style.STROKE);
-            mEdgeDarkPaint.setStrokeWidth(1.0f);
-            mEdgeDarkPaint.setColor(isDark ? 0x30000000 : 0x20FFFFFF);
+            // 4. Edge shadow: very subtle 1px line for depth
+            mEdgeShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mEdgeShadowPaint.setStyle(Paint.Style.STROKE);
+            mEdgeShadowPaint.setStrokeWidth(1.0f);
+            mEdgeShadowPaint.setColor(isDark ? 0x20000000 : 0x15FFFFFF);
         }
-
-        // ====== Public API ======
 
         public void setCornerRadius(float radius) {
             mCornerRadius = radius;
@@ -1604,63 +1578,48 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         public void setPopGlow(float glow) {
-            mPopGlow = Math.max(0f, Math.min(1f, glow));
+            // No-op: uniform glass doesn't have pop glow
             invalidate();
         }
 
         public void setBackgroundBitmap(Bitmap bitmap) {
             mBgBitmap = bitmap;
-            mBgShaderDirty = true;
+            if (bitmap != null && !bitmap.isRecycled()) {
+                BitmapShader shader = new BitmapShader(bitmap,
+                    Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+                mBlurPaint.setShader(shader);
+            }
             invalidate();
         }
 
-        private void ensureBgShader() {
-            if (mBgShaderDirty && mBgBitmap != null && !mBgBitmap.isRecycled()) {
-                mBgShader = new BitmapShader(mBgBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
-                mBgShaderPaint.setShader(mBgShader);
-                mBgShaderDirty = false;
-            }
-        }
-
-        // ====== Draw ======
+        public void setTouchPoint(float x, float y, float pressure) {}
+        public void clearTouchPoint() {}
+        public void stopAnimations() {}
 
         @Override
         protected void onDraw(Canvas canvas) {
-            mClipPath.reset();
-            mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
+            Path clipPath = new Path();
+            clipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius,
+                Path.Direction.CW);
             int saveCount = canvas.save();
-            canvas.clipPath(mClipPath);
+            canvas.clipPath(clipPath);
 
-            // 1. Background blur (bottom layer)
+            // 1. Background blur (the foundation)
             if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
-                ensureBgShader();
-                canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBgShaderPaint);
+                canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBlurPaint);
             }
 
-            // 2. Uniform glass tint - even across entire surface
+            // 2. Uniform frosted tint (even across entire surface)
             canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mTintPaint);
 
-            // 3. Subtle top glow (25% height, very faint)
-            int glowAlpha = (int)(24 + 20 * mPopGlow);
-            mTopGlowPaint.setAlpha(Math.min(255, glowAlpha));
-            canvas.drawRect(mTopGlowRect, mTopGlowPaint);
-
-            // 4. Edge highlight - thin 1px line
-            int lightAlpha = (int)(40 + 30 * mPopGlow);
-            mEdgeLightPaint.setAlpha(Math.min(255, lightAlpha));
+            // 3. Subtle edge highlight
             canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeLightPaint);
 
-            // 5. Edge shadow - thin 1px line
-            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeDarkPaint);
+            // 4. Subtle edge shadow for depth
+            canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mEdgeShadowPaint);
 
             canvas.restoreToCount(saveCount);
         }
-
-        // ====== Touch point (no-op, kept for compatibility) ======
-        public void setTouchPoint(float x, float y, float pressure) {}
-        public void clearTouchPoint() {}
-
-        public void stopAnimations() {}
 
         @Override
         protected void onDetachedFromWindow() {
