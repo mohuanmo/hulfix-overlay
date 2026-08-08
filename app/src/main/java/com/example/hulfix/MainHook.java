@@ -967,14 +967,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 ImageView bgView = new ImageView(mContext);
                 bgView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 bgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                // 圆角裁剪，与外层匹配
-                bgView.setClipToOutline(true);
-                bgView.setOutlineProvider(new ViewOutlineProvider() {
-                    @Override
-                    public void getOutline(View view, Outline outline) {
-                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
-                    }
-                });
+                // 圆角裁剪由外层 root 统一处理，避免 ImageView CENTER_CROP 与 ClipToOutline 冲突
                 root.addView(bgView);
                 mBgImageView = bgView;
 
@@ -990,15 +983,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 contentContainer.setPadding(20, 14, 20, 14);
                 contentContainer.setGravity(Gravity.CENTER_VERTICAL);
                 contentContainer.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
-                contentContainer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-                // 给内容容器添加圆角裁剪，与外层玻璃圆角匹配
-                contentContainer.setClipToOutline(true);
-                contentContainer.setOutlineProvider(new ViewOutlineProvider() {
-                    @Override
-                    public void getOutline(View view, Outline outline) {
-                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
-                    }
-                });
+                // 硬件层会绕过父视图 ClipToOutline，改为 NONE 让 root 统一裁剪
+                contentContainer.setLayerType(View.LAYER_TYPE_NONE, null);
 
                 ImageView iconView = new ImageView(mContext);
                 android.graphics.drawable.Icon icon = notification.getSmallIcon();
@@ -1788,6 +1774,15 @@ public class MainHook implements IXposedHookLoadPackage {
                 Math.max(0f, mCornerRadius - inset),
                 Math.max(0f, mCornerRadius - inset),
                 mEdgeShadowPaint);
+        }
+
+        // Touch Dent 层已移除，保留空方法避免编译错误
+        public void setTouchPoint(float x, float y, float pressure) {
+            // no-op: touch dent layer removed in v27.5.4
+        }
+
+        public void clearTouchPoint() {
+            // no-op: touch dent layer removed in v27.5.4
         }
 
         public void stopAnimations() {
