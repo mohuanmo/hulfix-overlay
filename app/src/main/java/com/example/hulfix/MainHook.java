@@ -1735,7 +1735,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
             // 绘制顺序：从底到顶，每层独立可调
             drawBackgroundBlur(canvas);   // 1. 背景模糊（最底层）
-            drawInnerBlur(canvas);        // 1.5 中间区域额外模糊
+            // drawInnerBlur removed: middle overlay layer eliminated
             drawBaseTint(canvas);         // 2. 半透明色调叠加
             drawRadialMask(canvas);       // 3. 径向暗角（中心亮边缘暗）
             drawTopReflection(canvas);    // 4. 顶部高光反射
