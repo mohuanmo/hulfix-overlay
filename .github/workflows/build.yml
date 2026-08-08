@@ -1,4 +1,4 @@
-name: Build and Release APK
+name: Build and Release APK (Versioned Release)
 
 on:
   push:
@@ -52,6 +52,14 @@ jobs:
         echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_ENV
         echo "Version code: $VERSION_CODE"
 
+    - name: Extract Version Name
+      id: version
+      run: |
+        VERSION_NAME=$(grep -oP 'versionName\s+"\K[^"]+' app/build.gradle)
+        echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+        echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+        echo "Version name: $VERSION_NAME"
+
     - name: Build Debug APK
       run: |
         gradle assembleDebug --no-daemon --stacktrace --init-script init.gradle -PversionCode=$VERSION_CODE
@@ -63,23 +71,25 @@ jobs:
         APK_SIZE=$(stat -c%s app/build/outputs/apk/debug/app-debug.apk)
         echo "APK size: $APK_SIZE bytes"
         if [ "$APK_SIZE" -lt 10000 ]; then
-          echo "❌ ERROR: APK size ($APK_SIZE bytes) is too small, build may have failed silently!"
+          echo "ERROR: APK size ($APK_SIZE bytes) is too small, build may have failed silently!"
           exit 1
         fi
         test -f app/build/outputs/apk/debug/app-debug.apk
 
-    - name: Delete old release
-      run: |
-        gh release delete latest --yes || true
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Push to GitHub Releases
+    - name: Push to GitHub Releases (Versioned)
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: latest
-        name: HULFix Overlay Latest Build
-        body: Auto-built APK for custom Heads-Up notification overlay.
+        tag_name: v${{ steps.version.outputs.version_name }}
+        name: HULFix Overlay v${{ steps.version.outputs.version_name }}
+        body: |
+          HULFix Overlay v${{ steps.version.outputs.version_name }} — LSPosed module for custom Heads-Up notifications.
+
+          **Changelog:**
+          - Performance: Removed 141 diagnostic log lines, reducing runtime overhead
+          - iOS 26 Liquid Glass visual redesign (10-layer glass stack)
+          - Android 12+ hardware blur via RenderEffect with colorMatrix tint
+          - Radial gradient opacity mask (center → edge thickness variation)
+          - 4-phase organic enter animation (condensation → burst → settle → calm)
         files: app/build/outputs/apk/debug/app-debug.apk
         draft: false
         prerelease: false
