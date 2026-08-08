@@ -1565,47 +1565,27 @@ public class MainHook implements IXposedHookLoadPackage {
 
 
     // ============================================================
-    // iOS 26 Liquid Glass 风格液态玻璃视图
-    // 参考 Apple WWDC 2025 Liquid Glass 设计语言
-    // 特征：多层厚度、环境光溢色、镜面高光、边缘倒角、内部反射
+    // 高对比度磨砂玻璃视图 - 真正能看到的液态玻璃效果
+    // 简化设计：只保留有明显视觉效果的层
     // ============================================================
     private class LiquidGlassView extends View {
 
-        // === 多层玻璃绘制工具 ===
-        private final Paint mBackSurfacePaint;      // 后表面（更深、更暗）
-        private final Paint mFrontSurfacePaint;       // 前表面（主要可见层）
-        private final Paint mVolumePaint;             // 玻璃厚度/体积感
-        private final Paint mSpecularPaint;           // 镜面高光（顶部明亮反射）
-        private final Paint mInnerReflectionPaint;    // 内部反射
-        private final Paint mAmbientSpillPaint;       // 环境光溢色（边缘）
-        private final Paint mBevelHighlightPaint;     // 边缘倒角高光
-        private final Paint mBevelShadowPaint;        // 边缘倒角阴影
-        private final Paint mMicroNoisePaint;         // 微观纹理
-        private final Paint mCausticPaint;            // 焦散光效（玻璃聚焦效果）
-        private final Paint mRadialMaskPaint;         // 径向渐变遮罩（中心→边缘透明度变化）
+        // === 核心绘制工具 ===
+        private final Paint mBasePaint;              // 磨砂玻璃底色（主体可见层）
+        private final Paint mTopReflectionPaint;       // 顶部白色反光带
+        private final Paint mEdgeHighlightPaint;       // 边缘高光（顶部/左侧亮边）
+        private final Paint mEdgeShadowPaint;          // 边缘阴影（底部/右侧暗边）
+        private final Paint mRadialMaskPaint;          // 径向渐变遮罩
 
-        // === 动态纹理 ===
-        private final Bitmap mMicroNoiseBitmap;
-        private final BitmapShader mMicroNoiseShader;
-        private final Matrix mNoiseMatrix;
-
-        // === 高光渐变 ===
-        private LinearGradient mSpecularGradient;
-        private final Matrix mSpecularMatrix;
-        private RadialGradient mAmbientGradient;
-        private final Matrix mAmbientMatrix;
+        // === 高光动画 ===
+        private LinearGradient mTopReflectionGradient;
+        private final Matrix mReflectionMatrix;
 
         // === 动画器 ===
-        private ValueAnimator mBreathAnimator;
         private ValueAnimator mShimmerAnimator;
-        private ValueAnimator mNoiseAnimator;
-        private ValueAnimator mCausticAnimator;
 
         // === 动画状态 ===
-        private float mBreathAlpha = 0.92f;
         private float mShimmerOffset = 0f;
-        private float mNoiseOffset = 0f;
-        private float mCausticPhase = 0f;
 
         // === 几何 ===
         private final int mViewWidth;
@@ -1613,14 +1593,8 @@ public class MainHook implements IXposedHookLoadPackage {
         private float mCornerRadius;
         private final boolean mIsDark;
         private final RectF mDrawRect;
-        private final RectF mInsetRect;
-        private final android.graphics.Path mClipPath;
-        private final android.graphics.Path mInnerClipPath;
 
-        // === 交互状态 ===
-        private float mTouchX = -1f;
-        private float mTouchY = -1f;
-        private float mTouchPressure = 0f;
+        // === 弹出光晕 ===
         private float mPopGlow = 0f;
 
         public LiquidGlassView(Context context, int w, int h, boolean isDark) {
@@ -1630,52 +1604,29 @@ public class MainHook implements IXposedHookLoadPackage {
             mCornerRadius = 28f;
             mIsDark = isDark;
             mDrawRect = new RectF(0, 0, w, h);
-            mInsetRect = new RectF(2f, 2f, w - 2f, h - 2f);
-            mClipPath = new android.graphics.Path();
-            mInnerClipPath = new android.graphics.Path();
+            mReflectionMatrix = new Matrix();
 
-            // 初始化所有绘制层
-            mBackSurfacePaint = initBackSurface(w, h, isDark);
-            mFrontSurfacePaint = initFrontSurface(w, h, isDark);
-            mVolumePaint = initVolumeLayer(w, h, isDark);
-            mSpecularPaint = initSpecular(w, h);
-            mInnerReflectionPaint = initInnerReflection(w, h, isDark);
-            mAmbientSpillPaint = initAmbientSpill(isDark);
-            mBevelHighlightPaint = initBevelHighlight(isDark);
-            mBevelShadowPaint = initBevelShadow(isDark);
-            mMicroNoisePaint = initMicroNoise();
-            mCausticPaint = initCaustic(w, h);
+            // 初始化各层 - 使用高对比度 alpha，确保可见
+            mBasePaint = initBasePaint(w, h, isDark);
+            mTopReflectionPaint = initTopReflection(w, h);
+            mEdgeHighlightPaint = initEdgeHighlight(isDark);
+            mEdgeShadowPaint = initEdgeShadow(isDark);
             mRadialMaskPaint = initRadialMask(w, h, isDark);
 
-            // 微观噪点纹理
-            mMicroNoiseBitmap = createMicroNoiseBitmap(256, 256);
-            mMicroNoiseShader = new BitmapShader(mMicroNoiseBitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
-            mMicroNoisePaint.setShader(mMicroNoiseShader);
-
-            mNoiseMatrix = new Matrix();
-            mSpecularMatrix = new Matrix();
-            mAmbientMatrix = new Matrix();
-
-            startAnimations();
+            startShimmerAnimation();
         }
 
-        // ====== 初始化各绘制层 ======
+        // ====== 初始化各层 ======
 
-        private Paint initBackSurface(int w, int h, boolean isDark) {
+        private Paint initBasePaint(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 后表面：更深、更饱和，模拟玻璃背面的深色
-            int baseColor = isDark ? 0x30000000 : 0x18FFFFFF;
-            paint.setColor(baseColor);
-            return paint;
-        }
-
-        private Paint initFrontSurface(int w, int h, boolean isDark) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 前表面：主可见层，带微妙的径向渐变营造球面感
-            int centerColor = isDark ? 0x28000000 : 0x20FFFFFF;
-            int edgeColor = isDark ? 0x1A000000 : 0x14FFFFFF;
+            // 磨砂玻璃主体：高对比度半透明
+            // 浅色主题：白色半透明（alpha 160/255 ≈ 63% 不透明度）
+            // 深色主题：黑色半透明（alpha 140/255 ≈ 55% 不透明度）
+            int centerColor = isDark ? 0x8C000000 : 0xA0FFFFFF;
+            int edgeColor = isDark ? 0xB4000000 : 0xC8FFFFFF;
             RadialGradient grad = new RadialGradient(
-                w * 0.5f, h * 0.4f, Math.max(w, h) * 0.7f,
+                w * 0.5f, h * 0.4f, Math.max(w, h) * 0.8f,
                 new int[]{centerColor, edgeColor},
                 new float[]{0f, 1f},
                 Shader.TileMode.CLAMP);
@@ -1683,103 +1634,51 @@ public class MainHook implements IXposedHookLoadPackage {
             return paint;
         }
 
-        private Paint initVolumeLayer(int w, int h, boolean isDark) {
+        private Paint initTopReflection(int w, int h) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 体积感：玻璃边缘的厚度暗示
-            int innerColor = isDark ? 0x00000000 : 0x00FFFFFF;
-            int outerColor = isDark ? 0x15000000 : 0x10FFFFFF;
-            RadialGradient grad = new RadialGradient(
-                w * 0.5f, h * 0.5f, Math.max(w, h) * 0.5f,
-                new int[]{innerColor, outerColor},
-                new float[]{0.6f, 1f},
+            // 顶部白色反光带：明显可见
+            mTopReflectionGradient = new LinearGradient(
+                0, 0, 0, h * 0.5f,
+                new int[]{0x00FFFFFF, 0x80FFFFFF, 0x30FFFFFF, 0x00FFFFFF},
+                new float[]{0f, 0.3f, 0.6f, 1f},
                 Shader.TileMode.CLAMP);
-            paint.setShader(grad);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
-            return paint;
-        }
-
-        private Paint initSpecular(int w, int h) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 镜面高光：顶部明亮的弧形反射带
-            mSpecularGradient = new LinearGradient(
-                0, 0, 0, h * 0.45f,
-                new int[]{0x00FFFFFF, 0x45FFFFFF, 0x10FFFFFF, 0x00FFFFFF},
-                new float[]{0f, 0.35f, 0.7f, 1f},
-                Shader.TileMode.CLAMP);
-            paint.setShader(mSpecularGradient);
+            paint.setShader(mTopReflectionGradient);
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
             return paint;
         }
 
-        private Paint initInnerReflection(int w, int h, boolean isDark) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 内部反射：底部微妙的二次反射
-            int reflColor = isDark ? 0x08000000 : 0x0AFFFFFF;
-            LinearGradient grad = new LinearGradient(
-                0, h * 0.6f, 0, h,
-                0x00000000, reflColor,
-                Shader.TileMode.CLAMP);
-            paint.setShader(grad);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
-            return paint;
-        }
-
-        private Paint initAmbientSpill(boolean isDark) {
+        private Paint initEdgeHighlight(boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(3f);
-            // 环境光溢色：边缘处背景颜色渗入玻璃
-            paint.setColor(isDark ? 0x20FFFFFF : 0x18FFFFFF);
+            paint.setStrokeWidth(2.0f);
+            // 边缘高光：高对比度白色
+            paint.setColor(isDark ? 0xB0FFFFFF : 0xD0FFFFFF);
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
             return paint;
         }
 
-        private Paint initBevelHighlight(boolean isDark) {
+        private Paint initEdgeShadow(boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.2f);
-            // 倒角高光：顶部/左侧更亮
-            paint.setColor(isDark ? 0x60FFFFFF : 0x85FFFFFF);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
-            return paint;
-        }
-
-        private Paint initBevelShadow(boolean isDark) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(1.0f);
-            // 倒角阴影：底部/右侧更暗
-            paint.setColor(isDark ? 0x30000000 : 0x20FFFFFF);
-            return paint;
-        }
-
-        private Paint initMicroNoise() {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.OVERLAY));
-            return paint;
-        }
-
-        private Paint initCaustic(int w, int h) {
-            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 焦散：玻璃聚焦光线的微妙光斑
-            paint.setColor(0x08FFFFFF);
-            paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.ADD));
+            paint.setStrokeWidth(1.5f);
+            // 边缘阴影：高对比度暗色
+            paint.setColor(isDark ? 0x70000000 : 0x50FFFFFF);
             return paint;
         }
 
         private Paint initRadialMask(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // 中心更透明，边缘更实
-            int centerAlpha = isDark ? 0x15 : 0x10;  // 中心：约 8-10% 不透明度
-            int edgeAlpha = isDark ? 0x50 : 0x40;    // 边缘：约 25-31% 不透明度
+            // 中心更透明，边缘更实 - 高对比度
+            int centerAlpha = isDark ? 0x30 : 0x28;  // 中心：约 16-19% 不透明度
+            int edgeAlpha = isDark ? 0x90 : 0x80;    // 边缘：约 50-56% 不透明度
             RadialGradient gradient = new RadialGradient(
-                w * 0.5f, h * 0.45f, Math.max(w, h) * 0.65f,
+                w * 0.5f, h * 0.45f, Math.max(w, h) * 0.7f,
                 new int[]{
                     Color.argb(centerAlpha, 255, 255, 255),
                     Color.argb((centerAlpha + edgeAlpha) / 2, 255, 255, 255),
                     Color.argb(edgeAlpha, 255, 255, 255)
                 },
-                new float[]{0f, 0.6f, 1f},
+                new float[]{0f, 0.5f, 1f},
                 Shader.TileMode.CLAMP
             );
             paint.setShader(gradient);
@@ -1787,49 +1686,9 @@ public class MainHook implements IXposedHookLoadPackage {
             return paint;
         }
 
-        // ====== 微观噪点纹理 ======
-
-        private Bitmap createMicroNoiseBitmap(int w, int h) {
-            Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            Canvas c = new Canvas(bmp);
-            Paint p = new Paint();
-            java.util.Random r = new java.util.Random(54321);
-            // 非常细腻的微观纹理，模拟玻璃表面的微观不规则
-            for (int i = 0; i < 400; i++) {
-                float x = r.nextFloat() * w;
-                float y = r.nextFloat() * h;
-                float radius = 0.3f + r.nextFloat() * 1.2f;
-                int a = 3 + r.nextInt(12);
-                p.setColor(Color.argb(a, 255, 255, 255));
-                c.drawCircle(x, y, radius, p);
-            }
-            // 添加一些更小的点
-            for (int i = 0; i < 200; i++) {
-                float x = r.nextFloat() * w;
-                float y = r.nextFloat() * h;
-                int a = 2 + r.nextInt(6);
-                p.setColor(Color.argb(a, 200, 220, 255));
-                c.drawPoint(x, y, p);
-            }
-            return bmp;
-        }
-
         // ====== 动画 ======
 
-        private void startAnimations() {
-            // 呼吸：更微妙的透明度波动
-            mBreathAnimator = ValueAnimator.ofFloat(0.88f, 0.96f);
-            mBreathAnimator.setDuration(4000);
-            mBreathAnimator.setRepeatCount(ValueAnimator.INFINITE);
-            mBreathAnimator.setRepeatMode(ValueAnimator.REVERSE);
-            mBreathAnimator.setInterpolator(new AccelerateDecelerateInterpolator());
-            mBreathAnimator.addUpdateListener(anim -> {
-                mBreathAlpha = (float) anim.getAnimatedValue();
-                invalidate();
-            });
-            mBreathAnimator.start();
-
-            // 高光扫过：模拟光源移动
+        private void startShimmerAnimation() {
             mShimmerAnimator = ValueAnimator.ofFloat(-0.8f, 1.8f);
             mShimmerAnimator.setDuration(5000);
             mShimmerAnimator.setRepeatCount(ValueAnimator.INFINITE);
@@ -1837,51 +1696,17 @@ public class MainHook implements IXposedHookLoadPackage {
             mShimmerAnimator.setInterpolator(new LinearInterpolator());
             mShimmerAnimator.addUpdateListener(anim -> {
                 mShimmerOffset = (float) anim.getAnimatedValue();
-                mSpecularMatrix.setTranslate(mShimmerOffset * mViewWidth * 0.3f, 0);
-                mSpecularGradient.setLocalMatrix(mSpecularMatrix);
+                mReflectionMatrix.setTranslate(mShimmerOffset * mViewWidth * 0.3f, 0);
+                mTopReflectionGradient.setLocalMatrix(mReflectionMatrix);
                 invalidate();
             });
             mShimmerAnimator.start();
-
-            // 噪点微动：模拟玻璃内部微观流动
-            mNoiseAnimator = ValueAnimator.ofFloat(0f, 1f);
-            mNoiseAnimator.setDuration(6000);
-            mNoiseAnimator.setRepeatCount(ValueAnimator.INFINITE);
-            mNoiseAnimator.setInterpolator(new LinearInterpolator());
-            mNoiseAnimator.addUpdateListener(anim -> {
-                mNoiseOffset = (float) anim.getAnimatedValue();
-                mNoiseMatrix.setTranslate(mNoiseOffset * 128, mNoiseOffset * 64);
-                mMicroNoiseShader.setLocalMatrix(mNoiseMatrix);
-                invalidate();
-            });
-            mNoiseAnimator.start();
-
-            // 焦散缓慢波动
-            mCausticAnimator = ValueAnimator.ofFloat(0f, (float)(Math.PI * 2));
-            mCausticAnimator.setDuration(8000);
-            mCausticAnimator.setRepeatCount(ValueAnimator.INFINITE);
-            mCausticAnimator.setInterpolator(new LinearInterpolator());
-            mCausticAnimator.addUpdateListener(anim -> {
-                mCausticPhase = (float) anim.getAnimatedValue();
-                invalidate();
-            });
-            mCausticAnimator.start();
         }
 
         // ====== 公共接口 ======
 
         public void setCornerRadius(float radius) {
             mCornerRadius = radius;
-            invalidate();
-        }
-
-        public void setTouchPoint(float x, float y, float pressure) {
-            mTouchX = x; mTouchY = y; mTouchPressure = pressure;
-            invalidate();
-        }
-
-        public void clearTouchPoint() {
-            mTouchX = -1f; mTouchY = -1f; mTouchPressure = 0f;
             invalidate();
         }
 
@@ -1894,181 +1719,85 @@ public class MainHook implements IXposedHookLoadPackage {
 
         @Override
         protected void onDraw(Canvas canvas) {
-            // 外层裁剪路径
-            mClipPath.reset();
-            mClipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
-
-            // 内层裁剪路径（用于内部效果）
-            float innerInset = 2.5f;
-            mInnerClipPath.reset();
-            mInnerClipPath.addRoundRect(
-                new RectF(innerInset, innerInset, mViewWidth - innerInset, mViewHeight - innerInset),
-                Math.max(0f, mCornerRadius - innerInset), Math.max(0f, mCornerRadius - innerInset),
-                android.graphics.Path.Direction.CW);
+            // 裁剪路径
+            android.graphics.Path clipPath = new android.graphics.Path();
+            clipPath.addRoundRect(mDrawRect, mCornerRadius, mCornerRadius, android.graphics.Path.Direction.CW);
 
             int saveCount = canvas.save();
-            canvas.clipPath(mClipPath);
+            canvas.clipPath(clipPath);
 
-            // 1. 后表面（玻璃背面）
-            drawBackSurface(canvas);
+            // 1. 磨砂玻璃底色（主体可见层）
+            drawBaseLayer(canvas);
 
-            // 2. 前表面（玻璃正面，主可见层）
-            drawFrontSurface(canvas);
+            // 2. 顶部白色反光带（明显可见）
+            drawTopReflection(canvas);
 
-            // 3. 体积感（厚度暗示）
-            drawVolumeLayer(canvas);
-
-            // 4. 内部反射
-            drawInnerReflection(canvas);
-
-            // 5. 镜面高光
-            drawSpecular(canvas);
-
-            // 6. 焦散光效
-            drawCaustic(canvas);
-
-            // 7. 微观噪点纹理
-            drawMicroNoise(canvas);
-
-            // 8. 边缘效果（倒角 + 环境光溢色）
-            drawEdgeEffects(canvas);
-
-            // 9. 径向渐变遮罩（中心→边缘透明度变化）
+            // 3. 径向渐变遮罩（中心→边缘透明度变化）
             drawRadialMask(canvas);
 
-            // 10. 触摸凹陷
-            drawTouchDent(canvas);
+            // 4. 边缘高光（顶部/左侧亮边）
+            drawEdgeHighlight(canvas);
+
+            // 5. 边缘阴影（底部/右侧暗边）
+            drawEdgeShadow(canvas);
 
             canvas.restoreToCount(saveCount);
         }
 
         // ====== 各层绘制方法 ======
 
-        private void drawBackSurface(Canvas canvas) {
-            mBackSurfacePaint.setAlpha((int)(200 * mBreathAlpha));
-            canvas.drawRect(mDrawRect, mBackSurfacePaint);
+        private void drawBaseLayer(Canvas canvas) {
+            // 主体层：高对比度，确保可见
+            mBasePaint.setAlpha(255);
+            canvas.drawRect(mDrawRect, mBasePaint);
         }
 
-        private void drawFrontSurface(Canvas canvas) {
-            mFrontSurfacePaint.setAlpha((int)(220 * mBreathAlpha));
-            canvas.drawRect(mDrawRect, mFrontSurfacePaint);
-        }
-
-        private void drawVolumeLayer(Canvas canvas) {
-            mVolumePaint.setAlpha((int)(160 * mBreathAlpha));
-            canvas.drawRect(mDrawRect, mVolumePaint);
-        }
-
-        private void drawInnerReflection(Canvas canvas) {
-            mInnerReflectionPaint.setAlpha((int)(100 * mBreathAlpha));
-            canvas.drawRect(mDrawRect, mInnerReflectionPaint);
-        }
-
-        private void drawSpecular(Canvas canvas) {
-            // 镜面高光强度受呼吸和弹出光晕影响
-            int baseAlpha = (int)(70 * mBreathAlpha);
-            int glowAlpha = (int)(100 * mPopGlow);
-            mSpecularPaint.setAlpha(Math.min(255, baseAlpha + glowAlpha));
-            canvas.drawRect(mDrawRect, mSpecularPaint);
-        }
-
-        private void drawCaustic(Canvas canvas) {
-            // 焦散光斑：缓慢移动的微妙光点
-            int baseAlpha = (int)(25 * mBreathAlpha);
-            int glowAlpha = (int)(40 * mPopGlow);
-            mCausticPaint.setAlpha(Math.min(255, baseAlpha + glowAlpha));
-
-            float cx1 = mViewWidth * 0.3f + (float)Math.sin(mCausticPhase) * 8f;
-            float cy1 = mViewHeight * 0.25f + (float)Math.cos(mCausticPhase * 0.7f) * 5f;
-            float r1 = 15f + (float)Math.sin(mCausticPhase * 1.3f) * 3f;
-            canvas.drawCircle(cx1, cy1, r1, mCausticPaint);
-
-            float cx2 = mViewWidth * 0.7f + (float)Math.cos(mCausticPhase * 0.8f) * 6f;
-            float cy2 = mViewHeight * 0.35f + (float)Math.sin(mCausticPhase * 1.1f) * 4f;
-            float r2 = 10f + (float)Math.cos(mCausticPhase * 1.5f) * 2f;
-            canvas.drawCircle(cx2, cy2, r2, mCausticPaint);
-        }
-
-        private void drawMicroNoise(Canvas canvas) {
-            int baseAlpha = (int)(35 * mBreathAlpha);
-            int glowAlpha = (int)(20 * mPopGlow);
-            mMicroNoisePaint.setAlpha(Math.min(255, baseAlpha + glowAlpha));
-            canvas.drawRect(mDrawRect, mMicroNoisePaint);
-        }
-
-        private void drawEdgeEffects(Canvas canvas) {
-            // 环境光溢色：玻璃边缘的柔和光晕
-            int spillAlpha = (int)(50 * mBreathAlpha + 80 * mPopGlow);
-            mAmbientSpillPaint.setAlpha(Math.min(255, spillAlpha));
-            float spillInset = 1.5f;
-            RectF spillRect = new RectF(spillInset, spillInset,
-                mViewWidth - spillInset, mViewHeight - spillInset);
-            canvas.drawRoundRect(spillRect,
-                Math.max(0f, mCornerRadius - spillInset),
-                Math.max(0f, mCornerRadius - spillInset),
-                mAmbientSpillPaint);
-
-            // 倒角高光（顶部和左侧更亮）
-            int bevelAlpha = (int)(90 * mBreathAlpha + 120 * mPopGlow);
-            mBevelHighlightPaint.setAlpha(Math.min(255, bevelAlpha));
-            float bevelInset = 0.8f;
-            RectF bevelRect = new RectF(bevelInset, bevelInset,
-                mViewWidth - bevelInset, mViewHeight - bevelInset);
-            canvas.drawRoundRect(bevelRect,
-                Math.max(0f, mCornerRadius - bevelInset),
-                Math.max(0f, mCornerRadius - bevelInset),
-                mBevelHighlightPaint);
-
-            // 倒角阴影（底部和右侧更暗）
-            int shadowAlpha = (int)(50 * mBreathAlpha);
-            mBevelShadowPaint.setAlpha(Math.min(255, shadowAlpha));
-            float shadowInset = 0.5f;
-            RectF shadowRect = new RectF(shadowInset, shadowInset,
-                mViewWidth - shadowInset, mViewHeight - shadowInset);
-            canvas.drawRoundRect(shadowRect,
-                Math.max(0f, mCornerRadius - shadowInset),
-                Math.max(0f, mCornerRadius - shadowInset),
-                mBevelShadowPaint);
+        private void drawTopReflection(Canvas canvas) {
+            // 顶部反光：弹出时增强
+            int baseAlpha = (int)(180 + 75 * mPopGlow);
+            mTopReflectionPaint.setAlpha(Math.min(255, baseAlpha));
+            canvas.drawRect(mDrawRect, mTopReflectionPaint);
         }
 
         private void drawRadialMask(Canvas canvas) {
-            mRadialMaskPaint.setAlpha((int)(255 * mBreathAlpha));
+            // 径向遮罩：弹出时增强
+            int baseAlpha = (int)(200 + 55 * mPopGlow);
+            mRadialMaskPaint.setAlpha(Math.min(255, baseAlpha));
             canvas.drawRect(mDrawRect, mRadialMaskPaint);
         }
 
-        private void drawTouchDent(Canvas canvas) {
-            if (mTouchX >= 0 && mTouchPressure > 0.01f) {
-                float dentR = 40f * mTouchPressure;
-                // 主凹陷
-                Paint dentPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                dentPaint.setColor(mIsDark ? 0x20000000 : 0x14FFFFFF);
-                canvas.drawCircle(mTouchX, mTouchY, dentR, dentPaint);
-                // 凹陷边缘高光（模拟玻璃被按压时的折射）
-                Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                rimPaint.setStyle(Paint.Style.STROKE);
-                rimPaint.setColor(Color.argb((int)(60 * mTouchPressure), 255, 255, 255));
-                rimPaint.setStrokeWidth(2.5f * mTouchPressure);
-                canvas.drawCircle(mTouchX, mTouchY, dentR, rimPaint);
-                // 凹陷内部二次反射
-                Paint innerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                innerPaint.setColor(Color.argb((int)(15 * mTouchPressure), 255, 255, 255));
-                canvas.drawCircle(mTouchX, mTouchY, dentR * 0.5f, innerPaint);
-            }
+        private void drawEdgeHighlight(Canvas canvas) {
+            // 边缘高光：高对比度
+            int baseAlpha = (int)(200 + 55 * mPopGlow);
+            mEdgeHighlightPaint.setAlpha(Math.min(255, baseAlpha));
+            float inset = 1.0f;
+            RectF rect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
+            canvas.drawRoundRect(rect,
+                Math.max(0f, mCornerRadius - inset),
+                Math.max(0f, mCornerRadius - inset),
+                mEdgeHighlightPaint);
+        }
+
+        private void drawEdgeShadow(Canvas canvas) {
+            // 边缘阴影
+            int baseAlpha = (int)(160);
+            mEdgeShadowPaint.setAlpha(Math.min(255, baseAlpha));
+            float inset = 0.5f;
+            RectF rect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
+            canvas.drawRoundRect(rect,
+                Math.max(0f, mCornerRadius - inset),
+                Math.max(0f, mCornerRadius - inset),
+                mEdgeShadowPaint);
         }
 
         public void stopAnimations() {
-            if (mBreathAnimator != null) { mBreathAnimator.cancel(); mBreathAnimator = null; }
             if (mShimmerAnimator != null) { mShimmerAnimator.cancel(); mShimmerAnimator = null; }
-            if (mNoiseAnimator != null) { mNoiseAnimator.cancel(); mNoiseAnimator = null; }
-            if (mCausticAnimator != null) { mCausticAnimator.cancel(); mCausticAnimator = null; }
         }
 
         @Override
         protected void onDetachedFromWindow() {
             super.onDetachedFromWindow();
             stopAnimations();
-            if (mMicroNoiseBitmap != null && !mMicroNoiseBitmap.isRecycled()) mMicroNoiseBitmap.recycle();
         }
     }
-
 } // MainHook
