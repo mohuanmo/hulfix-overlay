@@ -59,6 +59,7 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final float MIN_FLING_VELOCITY = 200f;
     private static final float SWIPE_INTENT_THRESHOLD = 40f;
     private static final float CLICK_THRESHOLD = 8f;
+    private static final float SWIPE_VISUAL_FACTOR = 2.5f; // alpha 衰减减缓系数，越大越迟钝
 
     private static final String BLOCK_PKG = "com.omarea.vtools";
     private static final int WINDOW_TYPE = 2017;
@@ -1012,7 +1013,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                 float dist = (float) Math.sqrt(dx * dx + dy * dy);
                                 // === 原生平移消失：跟随手指滑动，alpha 渐变 ===
                                 if (mCurrentOverlay != null && (lockedHorizontal || lockedVertical)) {
-                                    float progress = Math.min(1f, dist / SWIPE_DESTROY_THRESHOLD);
+                                    float progress = Math.min(1f, dist / (SWIPE_DESTROY_THRESHOLD * SWIPE_VISUAL_FACTOR));
 
                                     // 平移直接跟随手指（1:1），不减缓
                                     if (lockedHorizontal) {
@@ -1023,14 +1024,15 @@ public class MainHook implements IXposedHookLoadPackage {
                                         mCurrentOverlay.setTranslationY(dy);
                                     }
 
-                                    // alpha 随滑动距离线性渐变
-                                    mCurrentOverlay.setAlpha(Math.max(0f, 1f - progress));
+                                    // alpha 随滑动距离缓慢渐变，最小保留 0.15 避免完全隐形
+                                    mCurrentOverlay.setAlpha(Math.max(0.15f, 1f - progress));
 
                                 } else if (mCurrentOverlay != null) {
                                     // 未锁定方向前，只平移+轻微透明度反馈
                                     mCurrentOverlay.setTranslationX(dx);
                                     mCurrentOverlay.setTranslationY(dy);
-                                    mCurrentOverlay.setAlpha(Math.max(0.5f, 1f - dist / SWIPE_DESTROY_THRESHOLD));
+                                    float preProgress = Math.min(1f, dist / (SWIPE_DESTROY_THRESHOLD * SWIPE_VISUAL_FACTOR));
+                                    mCurrentOverlay.setAlpha(Math.max(0.5f, 1f - preProgress * 0.6f));
                                 }
                                 return true;
                             case MotionEvent.ACTION_CANCEL:
@@ -1102,24 +1104,29 @@ public class MainHook implements IXposedHookLoadPackage {
                                         mUserDismissedKey = mCurrentKey;
                                         mUserDismissTime = SystemClock.elapsedRealtime();
                                     }
-                                    // 从当前位置继续平移出屏幕
+                                    // 从当前位置继续平移出屏幕（不重置属性，避免"重播"）
                                     if (mCurrentOverlay != null) {
-                                        cancelAllAnimations();
-                                        float endTransX = mCurrentOverlay.getTranslationX();
-                                        float endTransY = mCurrentOverlay.getTranslationY();
-                                        // 根据滑动方向决定出屏方向
+                                        // 只取消当前属性动画，不重置 translation/alpha
+                                        mCurrentOverlay.animate().cancel();
+                                        if (mContentView != null) mContentView.animate().cancel();
+
+                                        float currentTransX = mCurrentOverlay.getTranslationX();
+                                        float currentTransY = mCurrentOverlay.getTranslationY();
+                                        float endTransX = currentTransX;
+                                        float endTransY = currentTransY;
+
+                                        // 根据滑动方向决定出屏方向，保持另一轴当前位置
                                         if (isHorizontal) {
                                             endTransX = totalDx > 0 ? WIN_W * 1.5f : -WIN_W * 1.5f;
-                                            endTransY = 0;
                                         } else {
-                                            endTransX = 0;
                                             endTransY = -WIN_H * 1.5f;
                                         }
+
                                         mCurrentOverlay.animate()
                                             .translationX(endTransX)
                                             .translationY(endTransY)
                                             .alpha(0f)
-                                            .setDuration(200)
+                                            .setDuration(220)
                                             .setInterpolator(new DecelerateInterpolator())
                                             .withEndAction(() -> removeOverlayImmediate())
                                             .start();
