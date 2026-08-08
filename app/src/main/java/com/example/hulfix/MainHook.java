@@ -123,7 +123,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private ImageView mIconView = null;
     private TextView mTitleView = null;
     private TextView mTextView = null;
-    private ImageView mBgImageView = null;
     private LiquidGlassView mGlassView = null;
     private Bitmap mBlurredBgBitmap = null;
     private Runnable mBgUpdateRunnable = null;
@@ -654,8 +653,6 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mIconView != null) { mIconView.setAlpha(0f); mIconView.setScaleX(0.2f); mIconView.setScaleY(0.2f); }
         if (mTitleView != null) { mTitleView.setAlpha(0f); mTitleView.setTranslationY(20f); }
         if (mTextView != null) { mTextView.setAlpha(0f); mTextView.setTranslationY(16f); }
-        // 背景模糊初始完全隐藏
-        if (mBgImageView != null) mBgImageView.setAlpha(0f);
         // 圆角初始为完全圆形（水滴状）
         if (mGlassView != null) mGlassView.setCornerRadius(WIN_H * 0.5f);
 
@@ -739,20 +736,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 mGlassView.setPopGlow(popGlow);
             }
 
-            // === 背景模糊：从中心向外扩散，比容器稍晚启动 ===
-            if (mBgImageView != null) {
-                float bgAlpha;
-                if (t < 0.15f) {
-                    bgAlpha = 0f; // 前 105ms 完全隐藏，让容器先出现
-                } else if (t < 0.45f) {
-                    float p = (t - 0.15f) / 0.30f;
-                    bgAlpha = p * p * (3f - 2f * p); // 0 → 1
-                } else {
-                    bgAlpha = 1f;
-                }
-                mBgImageView.setAlpha(Math.min(1f, bgAlpha));
-            }
-
             // === 内容分层浮现：像从玻璃内部浮出，比容器更晚 ===
             // 图标：t=0.25 开始，带弹性浮出
             if (mIconView != null && t > 0.25f) {
@@ -792,7 +775,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 mEnterProgress = 1f;
                 // 恢复 root 的可见性
                 if (mCurrentOverlay != null) mCurrentOverlay.setAlpha(1f);
-                if (mBgImageView != null) mBgImageView.setAlpha(1f);
                 if (mIconView != null) { mIconView.setAlpha(1f); mIconView.setScaleX(1f); mIconView.setScaleY(1f); }
                 if (mTitleView != null) { mTitleView.setAlpha(1f); mTitleView.setTranslationY(0f); }
                 if (mTextView != null) { mTextView.setAlpha(1f); mTextView.setTranslationY(0f); }
@@ -811,7 +793,6 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mTextView != null) mTextView.animate().alpha(0f).setDuration(60).start();
         if (mTitleView != null) mTitleView.animate().alpha(0f).translationX(-15f).setDuration(80).setStartDelay(30).start();
         if (mIconView != null) mIconView.animate().alpha(0f).scaleX(0.5f).scaleY(0.5f).setDuration(80).setStartDelay(60).start();
-        if (mBgImageView != null) mBgImageView.animate().alpha(0f).setDuration(100).start();
 
         mExitAnim = ValueAnimator.ofFloat(0f, 1f);
         mExitAnim.setDuration(280);
@@ -963,23 +944,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 });
                 root.setClipToOutline(true);
 
-                // === 第1层：模糊背景 ImageView ===
-                ImageView bgView = new ImageView(mContext);
-                bgView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
-                bgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                // bgView 必须自己设置 ClipToOutline，root 的裁剪不会自动应用到子视图
-                // 使用 BACKGROUND outline provider + 圆角透明背景，比自定义 provider 更可靠
-                android.graphics.drawable.GradientDrawable bgOutline = new android.graphics.drawable.GradientDrawable();
-                bgOutline.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
-                bgOutline.setCornerRadius(28f);
-                bgOutline.setColor(android.graphics.Color.TRANSPARENT);
-                bgView.setBackground(bgOutline);
-                bgView.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND);
-                bgView.setClipToOutline(true);
-                root.addView(bgView);
-                mBgImageView = bgView;
-
-                // === 第2层：液态玻璃效果层（Shader 动态渲染，包含径向渐变遮罩）===
+                // === 第1层：液态玻璃效果层（Shader 动态渲染，包含径向渐变遮罩 + 模糊背景）===
                 LiquidGlassView glassOverlay = new LiquidGlassView(mContext, WIN_W, WIN_H, isDark);
                 glassOverlay.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 root.addView(glassOverlay);
@@ -1386,7 +1351,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void updateBackground() {
-        if (mBgImageView == null || mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
+        if (mGlassView == null || mCurrentOverlay == null || mCurrentOverlay.getParent() == null) {
             return;
         }
         if (mContentView != null && (mContentView.getTranslationX() != 0f || mContentView.getTranslationY() != 0f)) {
@@ -1404,53 +1369,53 @@ public class MainHook implements IXposedHookLoadPackage {
         if (Build.VERSION.SDK_INT >= 31) {
             mHandler.post(() -> {
                 try {
-                    if (mBgImageView != null) {
-                        mBgImageView.setImageBitmap(screen);
-                        mBgImageView.setScaleX(1.03f);
-                        mBgImageView.setScaleY(1.03f);
+                    if (mGlassView != null) {
                         // === iOS 26 Liquid Glass: blur + colorMatrix 链式组合 ===
                         // 步骤1: 创建 ColorMatrix（去饱和 + 暖色调 + 轻微暗化）
                         ColorMatrix cm = new ColorMatrix();
-                        cm.setSaturation(0.65f); // 去饱和到 65%，模拟玻璃"冷却"效果
+                        cm.setSaturation(0.65f);
 
-                        // 微调 RGB 通道增加暖色调（边缘环境光渗入）
+                        // 微调 RGB 通道增加暖色调
                         float[] matrix = cm.getArray();
-                        matrix[0] *= 1.08f;   // R 增益（暖光）
-                        matrix[6] *= 0.96f;   // G 轻微降低
-                        matrix[12] *= 0.90f;  // B 降低（整体偏暖黄）
-                        // 轻微降低亮度，让玻璃感更强
+                        matrix[0] *= 1.08f;
+                        matrix[6] *= 0.96f;
+                        matrix[12] *= 0.90f;
                         matrix[4] -= 0.04f;
                         matrix[9] -= 0.04f;
                         matrix[14] -= 0.04f;
-                        // 提高对比度，让暗部更深
-                        matrix[18] = 1.15f;   // Alpha 对比度（不影响 RGB）
+                        matrix[18] = 1.15f;
 
                         ColorMatrixColorFilter colorFilter = new ColorMatrixColorFilter(cm);
 
                         // 步骤2: 链式组合 blur → colorMatrix
-                        // 内层：高斯模糊
-                        android.graphics.RenderEffect blurEffect = 
+                        android.graphics.RenderEffect blurEffect =
                             android.graphics.RenderEffect.createBlurEffect(
                                 BLUR_RADIUS * 2.5f, BLUR_RADIUS * 2.5f,
                                 android.graphics.Shader.TileMode.CLAMP);
-                        // 外层：颜色矩阵色调
-                        android.graphics.RenderEffect colorEffect = 
+                        android.graphics.RenderEffect colorEffect =
                             android.graphics.RenderEffect.createColorFilterEffect(colorFilter);
-                        // 链式：先 blur，再应用 colorMatrix
-                        android.graphics.RenderEffect chainEffect = 
+                        android.graphics.RenderEffect chainEffect =
                             android.graphics.RenderEffect.createChainEffect(colorEffect, blurEffect);
 
-                        mBgImageView.setRenderEffect(chainEffect);
+                        // 应用 RenderEffect 到临时 ImageView，然后截图传给 LiquidGlassView
+                        android.widget.ImageView tempView = new android.widget.ImageView(mContext);
+                        tempView.setImageBitmap(screen);
+                        tempView.setRenderEffect(chainEffect);
+                        tempView.measure(
+                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_W, android.view.View.MeasureSpec.EXACTLY),
+                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_H, android.view.View.MeasureSpec.EXACTLY));
+                        tempView.layout(0, 0, WIN_W, WIN_H);
+                        Bitmap effectBmp = Bitmap.createBitmap(WIN_W, WIN_H, Bitmap.Config.ARGB_8888);
+                        Canvas effectCanvas = new Canvas(effectBmp);
+                        tempView.draw(effectCanvas);
+                        mGlassView.setBackgroundBitmap(effectBmp);
                     }
                     if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
                 } catch (Throwable t) {
-                    if (mBgImageView != null) {
-                        Bitmap blurred = fastBlur(screen);
-                        if (blurred != null) {
-                            mBgImageView.setRenderEffect(null);
-                            mBgImageView.setImageBitmap(blurred);
-                        }
-                    }
+                    fallbackBlurBackground(screen, oldBmp);
+                }
+                    if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
+                } catch (Throwable t) {
                 }
             });
             return;
@@ -1465,10 +1430,50 @@ public class MainHook implements IXposedHookLoadPackage {
         mBlurredBgBitmap = blurred;
         mHandler.post(() -> {
             try {
-                if (mBgImageView != null) {
-                    mBgImageView.setScaleX(1.03f);
-                    mBgImageView.setScaleY(1.03f);
-                    mBgImageView.setImageBitmap(blurred);
+                    if (mGlassView != null) {
+                        // === iOS 26 Liquid Glass: blur + colorMatrix 链式组合 ===
+                        // 步骤1: 创建 ColorMatrix（去饱和 + 暖色调 + 轻微暗化）
+                        ColorMatrix cm = new ColorMatrix();
+                        cm.setSaturation(0.65f);
+
+                        // 微调 RGB 通道增加暖色调
+                        float[] matrix = cm.getArray();
+                        matrix[0] *= 1.08f;
+                        matrix[6] *= 0.96f;
+                        matrix[12] *= 0.90f;
+                        matrix[4] -= 0.04f;
+                        matrix[9] -= 0.04f;
+                        matrix[14] -= 0.04f;
+                        matrix[18] = 1.15f;
+
+                        ColorMatrixColorFilter colorFilter = new ColorMatrixColorFilter(cm);
+
+                        // 步骤2: 链式组合 blur → colorMatrix
+                        android.graphics.RenderEffect blurEffect =
+                            android.graphics.RenderEffect.createBlurEffect(
+                                BLUR_RADIUS * 2.5f, BLUR_RADIUS * 2.5f,
+                                android.graphics.Shader.TileMode.CLAMP);
+                        android.graphics.RenderEffect colorEffect =
+                            android.graphics.RenderEffect.createColorFilterEffect(colorFilter);
+                        android.graphics.RenderEffect chainEffect =
+                            android.graphics.RenderEffect.createChainEffect(colorEffect, blurEffect);
+
+                        // 应用 RenderEffect 到临时 ImageView，然后截图传给 LiquidGlassView
+                        android.widget.ImageView tempView = new android.widget.ImageView(mContext);
+                        tempView.setImageBitmap(screen);
+                        tempView.setRenderEffect(chainEffect);
+                        tempView.measure(
+                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_W, android.view.View.MeasureSpec.EXACTLY),
+                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_H, android.view.View.MeasureSpec.EXACTLY));
+                        tempView.layout(0, 0, WIN_W, WIN_H);
+                        Bitmap effectBmp = Bitmap.createBitmap(WIN_W, WIN_H, Bitmap.Config.ARGB_8888);
+                        Canvas effectCanvas = new Canvas(effectBmp);
+                        tempView.draw(effectCanvas);
+                        mGlassView.setBackgroundBitmap(effectBmp);
+                    }
+                    if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
+                } catch (Throwable t) {
+                    fallbackBlurBackground(screen, oldBmp);
                 }
                 if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
             } catch (Throwable t) {
@@ -1491,6 +1496,16 @@ public class MainHook implements IXposedHookLoadPackage {
         if (mBgUpdateRunnable != null) {
             mHandler.removeCallbacks(mBgUpdateRunnable);
             mBgUpdateRunnable = null;
+        }
+    }
+
+    private void fallbackBlurBackground(Bitmap screen, Bitmap oldBmp) {
+        Bitmap blurred = fastBlur(screen);
+        if (blurred != null) {
+            mHandler.post(() -> {
+                if (mGlassView != null) mGlassView.setBackgroundBitmap(blurred);
+                if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
+            });
         }
     }
 
@@ -1535,9 +1550,6 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         } else {
         }
-        // 清除 RenderEffect（Android 12+）
-        if (mBgImageView != null) {
-            try { mBgImageView.setRenderEffect(null); } catch (Throwable ignored) {}
         }
 
         Bitmap oldBitmap = mBlurredBgBitmap;
@@ -1545,7 +1557,6 @@ public class MainHook implements IXposedHookLoadPackage {
         if (oldBitmap != null) {
             try { if (!oldBitmap.isRecycled()) oldBitmap.recycle(); } catch (Throwable ignored) {}
         }
-        mBgImageView = null;
         mContentView = null;
         mIconView = null;
         mTitleView = null;
@@ -1588,6 +1599,10 @@ public class MainHook implements IXposedHookLoadPackage {
         private final boolean mIsDark;
         private final RectF mDrawRect;
 
+        // === 背景模糊位图 ===
+        private Bitmap mBgBitmap = null;
+        private final Paint mBgPaint;
+
         // === 弹出光晕 ===
         private float mPopGlow = 0f;
 
@@ -1606,6 +1621,9 @@ public class MainHook implements IXposedHookLoadPackage {
             mEdgeHighlightPaint = initEdgeHighlight(isDark);
             mEdgeShadowPaint = initEdgeShadow(isDark);
             mRadialMaskPaint = initRadialMask(w, h, isDark);
+
+            mBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            mBgPaint.setFilterBitmap(true);
 
             startShimmerAnimation();
         }
@@ -1709,6 +1727,11 @@ public class MainHook implements IXposedHookLoadPackage {
             invalidate();
         }
 
+        public void setBackgroundBitmap(Bitmap bitmap) {
+            mBgBitmap = bitmap;
+            invalidate();
+        }
+
         // ====== 绘制主流程 ======
 
         @Override
@@ -1741,7 +1764,11 @@ public class MainHook implements IXposedHookLoadPackage {
         // ====== 各层绘制方法 ======
 
         private void drawBaseLayer(Canvas canvas) {
-            // 主体层：高对比度，确保可见
+            // 先画背景模糊位图（如果有）
+            if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
+                canvas.drawBitmap(mBgBitmap, null, mDrawRect, mBgPaint);
+            }
+            // 再画磨砂玻璃主体层
             mBasePaint.setAlpha(255);
             canvas.drawRect(mDrawRect, mBasePaint);
         }
