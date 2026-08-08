@@ -953,7 +953,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 // === 第3层：内容容器（可移动）===
                 LinearLayout contentContainer = new LinearLayout(mContext);
                 contentContainer.setOrientation(LinearLayout.HORIZONTAL);
-                contentContainer.setPadding(20, 14, 20, 14);
+                contentContainer.setPadding(28, 18, 28, 18);
                 contentContainer.setGravity(Gravity.CENTER_VERTICAL);
                 contentContainer.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 // 硬件层会绕过父视图 ClipToOutline，改为 NONE 让 root 统一裁剪
@@ -1588,15 +1588,15 @@ public class MainHook implements IXposedHookLoadPackage {
 
         // ====== 配置常量 ======
         // 液态玻璃透明度配置（0-255）
-        // iOS 26 Liquid Glass: 中心几乎完全透明，让背景清晰可见
-        private static final int TINT_CENTER_ALPHA_LIGHT = 0x08;  // 中心：3% 不透明度（几乎透明）
-        private static final int TINT_EDGE_ALPHA_LIGHT = 0x50;    // 边缘：31% 不透明度
-        private static final int TINT_CENTER_ALPHA_DARK = 0x06;   // 中心：2% 不透明度
-        private static final int TINT_EDGE_ALPHA_DARK = 0x40;     // 边缘：25% 不透明度
+        // iOS 26 Liquid Glass: 中心半透明，有磨砂感但不遮挡背景
+        private static final int TINT_CENTER_ALPHA_LIGHT = 0x20;  // 中心：12% 不透明度（有微妙色调）
+        private static final int TINT_EDGE_ALPHA_LIGHT = 0x70;    // 边缘：44% 不透明度（明显玻璃感）
+        private static final int TINT_CENTER_ALPHA_DARK = 0x18;   // 中心：9% 不透明度
+        private static final int TINT_EDGE_ALPHA_DARK = 0x60;     // 边缘：38% 不透明度
 
         private Paint initBasePaint(int w, int h, boolean isDark) {
             Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            // iOS 26 Liquid Glass: 中心几乎完全透明，让背景清晰可见
+            // iOS 26 Liquid Glass: 中心半透明，有磨砂感但不遮挡背景
             // 边缘略实，形成玻璃厚度感
             int centerAlpha = isDark ? TINT_CENTER_ALPHA_DARK : TINT_CENTER_ALPHA_LIGHT;
             int edgeAlpha = isDark ? TINT_EDGE_ALPHA_DARK : TINT_EDGE_ALPHA_LIGHT;
@@ -1609,6 +1609,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 new float[]{0f, 1f},
                 Shader.TileMode.CLAMP);
             paint.setShader(grad);
+            // 添加模糊效果，增加磨砂玻璃质感
+            paint.setMaskFilter(new BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL));
             // 使用 SRC_OVER 混合，让背景模糊透过来
             paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_OVER));
             return paint;
@@ -1728,6 +1730,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
             // 绘制顺序：从底到顶，每层独立可调
             drawBackgroundBlur(canvas);   // 1. 背景模糊（最底层）
+            drawInnerBlur(canvas);        // 1.5 中间区域额外模糊
             drawBaseTint(canvas);         // 2. 半透明色调叠加
             drawRadialMask(canvas);       // 3. 径向暗角（中心亮边缘暗）
             drawTopReflection(canvas);    // 4. 顶部高光反射
@@ -1747,6 +1750,24 @@ public class MainHook implements IXposedHookLoadPackage {
             if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
                 ensureBgShader();
                 canvas.drawRoundRect(mDrawRect, mCornerRadius, mCornerRadius, mBgShaderPaint);
+            }
+        }
+
+        private void drawInnerBlur(Canvas canvas) {
+            // 第1.5层：中间区域的额外模糊层
+            // 让中间区域也有磨砂感，不是纯透明
+            if (mBgBitmap != null && !mBgBitmap.isRecycled()) {
+                Paint blurPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                blurPaint.setColor(Color.argb(0x18, 255, 255, 255)); // 9% 白色
+                blurPaint.setMaskFilter(new BlurMaskFilter(12f, BlurMaskFilter.Blur.NORMAL));
+                // 绘制一个稍小的圆角矩形在中间
+                float inset = 8f;
+                RectF innerRect = new RectF(
+                    mDrawRect.left + inset,
+                    mDrawRect.top + inset,
+                    mDrawRect.right - inset,
+                    mDrawRect.bottom - inset);
+                canvas.drawRoundRect(innerRect, mCornerRadius - inset, mCornerRadius - inset, blurPaint);
             }
         }
 
