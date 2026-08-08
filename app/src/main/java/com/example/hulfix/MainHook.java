@@ -1414,9 +1414,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 } catch (Throwable t) {
                     fallbackBlurBackground(screen, oldBmp);
                 }
-                    if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
-                } catch (Throwable t) {
-                }
             });
             return;
         }
@@ -1430,50 +1427,8 @@ public class MainHook implements IXposedHookLoadPackage {
         mBlurredBgBitmap = blurred;
         mHandler.post(() -> {
             try {
-                    if (mGlassView != null) {
-                        // === iOS 26 Liquid Glass: blur + colorMatrix 链式组合 ===
-                        // 步骤1: 创建 ColorMatrix（去饱和 + 暖色调 + 轻微暗化）
-                        ColorMatrix cm = new ColorMatrix();
-                        cm.setSaturation(0.65f);
-
-                        // 微调 RGB 通道增加暖色调
-                        float[] matrix = cm.getArray();
-                        matrix[0] *= 1.08f;
-                        matrix[6] *= 0.96f;
-                        matrix[12] *= 0.90f;
-                        matrix[4] -= 0.04f;
-                        matrix[9] -= 0.04f;
-                        matrix[14] -= 0.04f;
-                        matrix[18] = 1.15f;
-
-                        ColorMatrixColorFilter colorFilter = new ColorMatrixColorFilter(cm);
-
-                        // 步骤2: 链式组合 blur → colorMatrix
-                        android.graphics.RenderEffect blurEffect =
-                            android.graphics.RenderEffect.createBlurEffect(
-                                BLUR_RADIUS * 2.5f, BLUR_RADIUS * 2.5f,
-                                android.graphics.Shader.TileMode.CLAMP);
-                        android.graphics.RenderEffect colorEffect =
-                            android.graphics.RenderEffect.createColorFilterEffect(colorFilter);
-                        android.graphics.RenderEffect chainEffect =
-                            android.graphics.RenderEffect.createChainEffect(colorEffect, blurEffect);
-
-                        // 应用 RenderEffect 到临时 ImageView，然后截图传给 LiquidGlassView
-                        android.widget.ImageView tempView = new android.widget.ImageView(mContext);
-                        tempView.setImageBitmap(screen);
-                        tempView.setRenderEffect(chainEffect);
-                        tempView.measure(
-                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_W, android.view.View.MeasureSpec.EXACTLY),
-                            android.view.View.MeasureSpec.makeMeasureSpec(WIN_H, android.view.View.MeasureSpec.EXACTLY));
-                        tempView.layout(0, 0, WIN_W, WIN_H);
-                        Bitmap effectBmp = Bitmap.createBitmap(WIN_W, WIN_H, Bitmap.Config.ARGB_8888);
-                        Canvas effectCanvas = new Canvas(effectBmp);
-                        tempView.draw(effectCanvas);
-                        mGlassView.setBackgroundBitmap(effectBmp);
-                    }
-                    if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
-                } catch (Throwable t) {
-                    fallbackBlurBackground(screen, oldBmp);
+                if (mGlassView != null) {
+                    mGlassView.setBackgroundBitmap(blurred);
                 }
                 if (oldBmp != null && !oldBmp.isRecycled()) oldBmp.recycle();
             } catch (Throwable t) {
