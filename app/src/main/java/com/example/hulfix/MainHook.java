@@ -967,7 +967,15 @@ public class MainHook implements IXposedHookLoadPackage {
                 ImageView bgView = new ImageView(mContext);
                 bgView.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 bgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                // 圆角裁剪由外层 root 统一处理，避免 ImageView CENTER_CROP 与 ClipToOutline 冲突
+                // bgView 必须自己设置 ClipToOutline，root 的裁剪不会自动应用到子视图
+                // 使用 BACKGROUND outline provider + 圆角透明背景，比自定义 provider 更可靠
+                android.graphics.drawable.GradientDrawable bgOutline = new android.graphics.drawable.GradientDrawable();
+                bgOutline.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+                bgOutline.setCornerRadius(28f);
+                bgOutline.setColor(android.graphics.Color.TRANSPARENT);
+                bgView.setBackground(bgOutline);
+                bgView.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND);
+                bgView.setClipToOutline(true);
                 root.addView(bgView);
                 mBgImageView = bgView;
 
@@ -1739,22 +1747,24 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         private void drawTopReflection(Canvas canvas) {
-            // 顶部反光：弹出时增强
-            int baseAlpha = (int)(180 + 75 * mPopGlow);
+            // 顶部反光：微妙的水汽感，不抢眼
+            int baseAlpha = (int)(70 + 40 * mPopGlow);
             mTopReflectionPaint.setAlpha(Math.min(255, baseAlpha));
-            canvas.drawRect(mDrawRect, mTopReflectionPaint);
+            // 只画顶部 35% 区域，避免和边缘描边重叠产生不均匀感
+            RectF topRect = new RectF(0, 0, mViewWidth, mViewHeight * 0.35f);
+            canvas.drawRect(topRect, mTopReflectionPaint);
         }
 
         private void drawRadialMask(Canvas canvas) {
-            // 径向遮罩：弹出时增强
-            int baseAlpha = (int)(200 + 55 * mPopGlow);
+            // 径向遮罩：微妙，不抢眼
+            int baseAlpha = (int)(90 + 40 * mPopGlow);
             mRadialMaskPaint.setAlpha(Math.min(255, baseAlpha));
             canvas.drawRect(mDrawRect, mRadialMaskPaint);
         }
 
         private void drawEdgeHighlight(Canvas canvas) {
-            // 边缘高光：高对比度
-            int baseAlpha = (int)(200 + 55 * mPopGlow);
+            // 边缘高光：微妙，不抢眼
+            int baseAlpha = (int)(100 + 40 * mPopGlow);
             mEdgeHighlightPaint.setAlpha(Math.min(255, baseAlpha));
             float inset = 1.0f;
             RectF rect = new RectF(inset, inset, mViewWidth - inset, mViewHeight - inset);
