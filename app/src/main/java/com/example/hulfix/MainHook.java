@@ -15,6 +15,7 @@ import android.animation.ObjectAnimator;
 import android.view.animation.OvershootInterpolator;
 import android.animation.ValueAnimator;
 import android.graphics.PixelFormat;
+import android.graphics.BlurMaskFilter;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
