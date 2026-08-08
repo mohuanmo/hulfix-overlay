@@ -361,7 +361,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void processNotification(StatusBarNotification sbn) {
         try {
-                + ", key=" + (sbn != null ? sbn.getKey() : "null"));
             if (sbn == null) {
                 return;
             }
@@ -446,6 +445,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         triggerGlobalCooldown();
                     }
                 });
+            } catch (Throwable ignored) {}
             try {
                 XposedHelpers.findAndHookMethod(csClass, "setExpandedVisible", boolean.class, new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
@@ -454,6 +454,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (visible) triggerGlobalCooldown();
                     }
                 });
+            } catch (Throwable ignored) {}
             try {
                 XposedHelpers.findAndHookMethod(csClass, "makeExpandedVisible", new XC_MethodHook() {
                     @Override protected void beforeHookedMethod(MethodHookParam param) {
@@ -461,6 +462,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         triggerGlobalCooldown();
                     }
                 });
+            } catch (Throwable ignored) {}
         } catch (Throwable t) {
         }
     }
