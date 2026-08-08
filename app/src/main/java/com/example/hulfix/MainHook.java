@@ -1004,6 +1004,14 @@ public class MainHook implements IXposedHookLoadPackage {
                 contentContainer.setGravity(Gravity.CENTER_VERTICAL);
                 contentContainer.setLayoutParams(new FrameLayout.LayoutParams(WIN_W, WIN_H));
                 contentContainer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                // 给内容容器添加圆角裁剪，与外层玻璃圆角匹配
+                contentContainer.setClipToOutline(true);
+                contentContainer.setOutlineProvider(new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 28f);
+                    }
+                });
 
                 ImageView iconView = new ImageView(mContext);
                 android.graphics.drawable.Icon icon = notification.getSmallIcon();
