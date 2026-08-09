@@ -82,10 +82,6 @@ public class MainHook implements IXposedHookLoadPackage {
     private long mGlobalCooldownTime = 0;
     private static final long GLOBAL_COOLDOWN_MS = 1000;
 
-    // 应用级别冷却：每个应用独立计时，防止同一应用通知轰炸，但不影响其他应用
-    private static final Map<String, Long> mAppCooldownMap = new ConcurrentHashMap<>();
-    private static final long APP_COOLDOWN_MS = 200; // 降低冷却，允许微信等应用快速更新通知
-
     private Object mHeadsUpManager = null;
     private Object mStatusBar = null;
 
@@ -394,15 +390,6 @@ public class MainHook implements IXposedHookLoadPackage {
             boolean userIgnored = mUserDismissedKey != null && key.equals(mUserDismissedKey)
                 && SystemClock.elapsedRealtime() - mUserDismissTime < USER_IGNORE_COOLDOWN_MS;
             if (userIgnored) return;
-
-            // 应用级别冷却：同一应用 200ms 内只显示一次，不影响其他应用
-            // 但对于更新通知（相同key不同内容），跳过冷却检查
-            String pkg = sbn.getPackageName();
-            Long lastAppTime = mAppCooldownMap.get(pkg);
-            boolean appCooldown = lastAppTime != null && SystemClock.elapsedRealtime() - lastAppTime < APP_COOLDOWN_MS;
-            // 检查是否是更新通知（相同key但内容不同）
-            boolean isUpdate = mCurrentKey != null && mCurrentKey.equals(key);
-            if (appCooldown && !isUpdate) return;
 
             boolean panelExpanded = isStatusBarExpanded();
             if (panelExpanded) return;
@@ -1247,9 +1234,6 @@ public class MainHook implements IXposedHookLoadPackage {
                     mCurrentOverlay = root;
                 }
                 XposedBridge.log(TAG + ": Shown: " + title);
-
-                // 记录该应用的最后显示时间（应用级别冷却）
-                mAppCooldownMap.put(sbn.getPackageName(), SystemClock.elapsedRealtime());
 
                 startEnterAnimation(contentContainer);
                 mAutoDismissRunnable = () -> {
