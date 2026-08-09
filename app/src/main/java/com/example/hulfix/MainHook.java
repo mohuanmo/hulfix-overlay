@@ -99,6 +99,12 @@ public class MainHook implements IXposedHookLoadPackage {
     private enum OverlayState { IDLE, ENTERING, SHOWING, EXITING, DRAGGING }
     private OverlayState mOverlayState = OverlayState.IDLE;
 
+    // === 通知内容提取结果 ===
+    private static class NotificationContent {
+        String title = "";
+        String content = "";
+    }
+
     private float mTouchMaxDx = 0f;
     private float mTouchMaxDy = 0f;
     private android.view.VelocityTracker mVelocityTracker = null;
@@ -812,15 +818,9 @@ public class MainHook implements IXposedHookLoadPackage {
         mHandler.post(() -> {
             try {
                 Bundle extras = notification.extras;
-                String title = extras != null ? extras.getString(Notification.EXTRA_TITLE, "") : "";
-                CharSequence text = extras != null ? extras.getCharSequence(Notification.EXTRA_TEXT, "") : "";
-                CharSequence bigText = extras != null ? extras.getCharSequence(Notification.EXTRA_BIG_TEXT, "") : "";
-                String content = "";
-                if (bigText != null && bigText.length() > 0) {
-                    content = bigText.toString();
-                } else if (text != null) {
-                    content = text.toString();
-                }
+                NotificationContent nc = extractNotificationContent(sbn, extras);
+                String title = nc.title;
+                String content = nc.content;
                 String newContent = title + "|" + content;
                 String newHash = Integer.toHexString(newContent.hashCode() & 0x7FFFFFFF);
 
@@ -1252,6 +1252,101 @@ public class MainHook implements IXposedHookLoadPackage {
             }
             startExitAnimation(mCurrentOverlay, () -> removeOverlayImmediate(), exitDirection);
         });
+    }
+
+    // === 通用通知内容解析：适配 InboxStyle / MessagingStyle / BigTextStyle / 普通通知 ===
+    private NotificationContent extractNotificationContent(StatusBarNotification sbn, Bundle extras) {
+        NotificationContent nc = new NotificationContent();
+        if (extras == null) {
+            nc.title = sbn.getPackageName();
+            nc.content = "新消息";
+            return nc;
+        }
+
+        // 1. 基础 title
+        nc.title = extras.getString(Notification.EXTRA_TITLE, "");
+
+        // 2. InboxStyle / Summary 通知：多条消息合并（微信、QQ、邮件等）
+        CharSequence[] textLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
+        if (textLines != null && textLines.length > 0) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < textLines.length && i < 3; i++) {
+                if (i > 0) sb.append(" · ");
+                sb.append(textLines[i]);
+            }
+            nc.content = sb.toString();
+            // title 为空时用 summaryText 兜底
+            if (nc.title.isEmpty()) {
+                CharSequence summary = extras.getCharSequence(Notification.EXTRA_SUMMARY_TEXT);
+                if (summary != null && summary.length() > 0) {
+                    nc.title = summary.toString();
+                }
+            }
+            if (nc.title.isEmpty()) {
+                nc.title = resolveAppLabel(sbn);
+            }
+            return nc;
+        }
+
+        // 3. MessagingStyle 通知：聊天消息（Android N+）
+        try {
+            Parcelable[] messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES);
+            if (messages != null && messages.length > 0) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < messages.length && i < 2; i++) {
+                    Object msg = messages[i];
+                    if (msg != null) {
+                        CharSequence text = (CharSequence) XposedHelpers.callMethod(msg, "getText");
+                        if (text != null && text.length() > 0) {
+                            if (i > 0) sb.append(" · ");
+                            sb.append(text);
+                        }
+                    }
+                }
+                nc.content = sb.toString();
+                if (nc.title.isEmpty()) {
+                    CharSequence convTitle = extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE);
+                    if (convTitle != null && convTitle.length() > 0) {
+                        nc.title = convTitle.toString();
+                    }
+                }
+                if (nc.title.isEmpty()) {
+                    nc.title = resolveAppLabel(sbn);
+                }
+                if (nc.content.isEmpty()) {
+                    nc.content = "新消息";
+                }
+                return nc;
+            }
+        } catch (Throwable ignored) {}
+
+        // 4. BigTextStyle / 普通通知
+        CharSequence bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
+        CharSequence text = extras.getCharSequence(Notification.EXTRA_TEXT);
+        if (bigText != null && bigText.length() > 0) {
+            nc.content = bigText.toString();
+        } else if (text != null && text.length() > 0) {
+            nc.content = text.toString();
+        }
+
+        // 5. 兜底
+        if (nc.title.isEmpty()) {
+            nc.title = resolveAppLabel(sbn);
+        }
+        if (nc.content.isEmpty()) {
+            nc.content = "新消息";
+        }
+        return nc;
+    }
+
+    private String resolveAppLabel(StatusBarNotification sbn) {
+        try {
+            android.content.pm.PackageManager pm = mContext.getPackageManager();
+            return pm.getApplicationLabel(
+                pm.getApplicationInfo(sbn.getPackageName(), 0)).toString();
+        } catch (Throwable ignored) {
+            return sbn.getPackageName();
+        }
     }
 
     private void removeOverlayImmediate() {
