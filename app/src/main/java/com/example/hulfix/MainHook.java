@@ -99,6 +99,15 @@ public class MainHook implements IXposedHookLoadPackage {
     private enum OverlayState { IDLE, ENTERING, SHOWING, EXITING, DRAGGING }
     private OverlayState mOverlayState = OverlayState.IDLE;
 
+    // === 强制生命周期锁 ===
+    // 入场动画一旦开始执行，本通知必须走完整个生命周期（超时消失 或 用户划走），
+    // 期间拒绝渲染任何新的悬浮窗（包括同 key 的内容更新），防止"新框子"顶掉"旧框子"
+    private volatile boolean mLifecycleLocked = false;
+    private long mLifecycleLockStart = 0;
+    private String mLifecycleLockKey = null;
+    // 安全兜底：锁的最大存活时间（AUTO_DISMISS + 入场/退场动画余量），防异常死锁
+    private static final long LIFECYCLE_LOCK_MAX_MS = AUTO_DISMISS_MS + 4000;
+
     // === 通知内容提取结果 ===
     private static class NotificationContent {
         String title = "";
@@ -146,7 +155,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v27 loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v28 (lifecycle lock) loaded ======");
         if (mHandler == null) mHandler = new Handler(Looper.getMainLooper());
         hookPanelExpansion(lpparam);
         captureHeadsUpManager(lpparam);
@@ -354,6 +363,13 @@ public class MainHook implements IXposedHookLoadPackage {
             if (BLOCK_PKG.equals(sbn.getPackageName())) {
                 return;
             }
+
+            // === 强制生命周期锁：当前通知已加锁（入场动画开始 → 等待超时消失或用户划走），
+            //     期间不渲染任何新的悬浮窗，新通知直接丢弃 ===
+            if (isLifecycleLocked()) {
+                return;
+            }
+
             if ((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0) {
                 return;
             }
@@ -528,6 +544,41 @@ public class MainHook implements IXposedHookLoadPackage {
     private void triggerGlobalCooldown() {
         mGlobalCooldownTime = SystemClock.elapsedRealtime();
         if (mCurrentOverlay != null) removeOverlayImmediate();
+    }
+
+    // === 强制生命周期锁：加锁（入场动画开始执行时调用）===
+    private void lockLifecycle(String key) {
+        mLifecycleLocked = true;
+        mLifecycleLockStart = SystemClock.elapsedRealtime();
+        mLifecycleLockKey = key;
+        XposedBridge.log(TAG + ": Lifecycle LOCKED, key=" + key);
+    }
+
+    // === 强制生命周期锁：解锁（生命周期结束时调用：超时消失 / 用户划走 / 强制移除）===
+    private void unlockLifecycle(String reason) {
+        if (mLifecycleLocked) {
+            XposedBridge.log(TAG + ": Lifecycle UNLOCKED (" + reason + "), key=" + mLifecycleLockKey);
+        }
+        mLifecycleLocked = false;
+        mLifecycleLockKey = null;
+        mLifecycleLockStart = 0;
+    }
+
+    // === 强制生命周期锁：是否处于锁定中（带双重安全兜底，防止永久锁死）===
+    private boolean isLifecycleLocked() {
+        if (!mLifecycleLocked) return false;
+        // 兜底1：超过最大锁定时长（正常路径 = 超时消失/用户划走时会主动解锁），强制释放
+        if (SystemClock.elapsedRealtime() - mLifecycleLockStart > LIFECYCLE_LOCK_MAX_MS) {
+            unlockLifecycle("safety timeout");
+            return false;
+        }
+        // 兜底2：悬浮窗已不在屏幕上但锁未释放（如动画回调丢失），强制释放
+        View overlay = mCurrentOverlay;
+        if (overlay == null || overlay.getParent() == null) {
+            unlockLifecycle("overlay gone");
+            return false;
+        }
+        return true;
     }
 
     private void registerScreenReceiver() {
@@ -727,6 +778,9 @@ public class MainHook implements IXposedHookLoadPackage {
         });
         mEnterAnim = master;
         master.start();
+        // === 强制生命周期锁：入场动画一开始执行，立即锁定本通知的完整生命周期 ===
+        // 此后直到超时消失或用户划走前，任何新通知都不得渲染新悬浮窗
+        lockLifecycle(mCurrentKey);
     }
 
     private void startExitAnimation(final View view, final Runnable onEnd, final int exitDirection) {
@@ -817,6 +871,12 @@ public class MainHook implements IXposedHookLoadPackage {
 
         mHandler.post(() -> {
             try {
+                // === 强制生命周期锁（二次检查）：post 到主线程期间可能已有新通知完成渲染并加锁，
+                //     已锁定则放弃本次渲染，绝不在锁定期内移除旧框、渲染新框 ===
+                if (isLifecycleLocked()) {
+                    return;
+                }
+
                 Bundle extras = notification.extras;
                 NotificationContent nc = extractNotificationContent(sbn, extras);
                 String title = nc.title;
@@ -1350,6 +1410,9 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void removeOverlayImmediate() {
+        // === 强制生命周期锁：悬浮窗被移除 = 生命周期结束，解锁，允许下一条通知渲染 ===
+        // 覆盖所有结束路径：超时消失 / 用户划走 / 点击跳转 / 下拉展开 / 熄屏 / 面板展开
+        unlockLifecycle("overlay removed");
         cancelAllAnimations();
         if (mAutoDismissRunnable != null) {
             mHandler.removeCallbacks(mAutoDismissRunnable);
