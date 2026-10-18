@@ -159,6 +159,8 @@ public final class SettingsRepository {
 
     private static final long FRESH_THROTTLE_MS = 150;
     private long mLastFreshRead = -FRESH_THROTTLE_MS;
+    /** 是否已 apply 过一次设置（首次之后，文件读不到时保留当前值，不用默认覆盖）。 */
+    private boolean mAppliedOnce;
 
     /**
      * Returns the current settings. Cheap: reloads from disk only when the preference
@@ -228,6 +230,15 @@ public final class SettingsRepository {
     }
 
     private void applyFromPrefs(long revision) {
+        if (revision < 0 && mAppliedOnce) {
+            // 文件通道不可读（SystemUI 被 SELinux 挡住读 App 私有目录是常态，
+            // revision 读不到 = 内容读不到）。此刻 readSettings(mPrefs) 的每个
+            // opt* 都会回落成默认值——若照常 apply，就会把广播刚送来的正确设置
+            // 覆盖回默认值，表现为"改设置永远不生效"（v34 实测日志抓到的回归）。
+            // 规则：首次（还没持有任何设置）时 apply 一份默认值；此后一律保留
+            // 当前设置（广播通道的值）。
+            return;
+        }
         Settings fresh;
         try {
             fresh = readSettings(mPrefs);
@@ -235,6 +246,7 @@ public final class SettingsRepository {
             XposedBridge.log("HULFix: FAILED to read settings from prefs file: " + t);
             return;
         }
+        mAppliedOnce = true;
         if (revision >= 0) mLastRevision = revision;
         try {
             File f = new File(PREFS_PATH);
