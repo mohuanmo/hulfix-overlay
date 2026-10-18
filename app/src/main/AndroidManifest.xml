@@ -44,6 +44,17 @@
                 <action android:name="com.example.hulfix.action.STAT_EVENT" />
             </intent-filter>
         </receiver>
+
+        <!-- 响应 SystemUI 重启后的设置同步请求。
+             必须静态注册：App 进程可能不在运行，静态 receiver 才能被 AMS
+             拉起并投递（"重启后不打开 App 也能同步设置"的关键）。 -->
+        <receiver
+            android:name=".ui.SettingsRequestReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.hulfix.action.REQUEST_SETTINGS" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

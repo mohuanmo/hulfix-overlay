@@ -30,6 +30,18 @@ public final class SettingsRepository {
     public static final String ACTION_SETTINGS_CHANGED =
             "com.example.hulfix.action.SETTINGS_CHANGED";
     /**
+     * hook 进程 → App 进程的设置同步请求。
+     *
+     * <p><b>为什么需要</b>：设置推送是事件驱动的（只有用户改设置才广播）。
+     * SystemUI 重启后 hook 进程重新初始化，此刻文件通道被 SELinux 挡住读不到
+     * prefs，只能拿到默认值——表现为"重启后悬浮窗用默认设置，必须回 App 随便
+     * 改一个设置触发广播才恢复"。本 action 由 hook 端在初始化后发给模块 App
+     * （显式包名，可拉起进程），App 的静态 receiver 收到后立即回送全量设置
+     * 广播；请求-响应模式让"谁先启动"不再重要。</p>
+     */
+    public static final String ACTION_REQUEST_SETTINGS =
+            "com.example.hulfix.action.REQUEST_SETTINGS";
+    /**
      * App 广播携带的全量设置 JSON（{@link Settings#toJson()}）。
      *
      * <p><b>主通道</b>：SystemUI（system_app 域）在不少 ROM 上被 SELinux 挡住，读不到
@@ -62,6 +74,8 @@ public final class SettingsRepository {
     private final MainHandler mHandler = new MainHandler();
     private XSharedPreferences mPrefs;
     private Settings mSettings;
+    /** start() 时保存的 Context（用于向 App 发同步请求广播）。 */
+    private Context mContextRef;
     private long mLastFileMtime = -1;
     private long mLastRevision = -1;
     private long mLastMtimeCheck = 0;
@@ -96,6 +110,7 @@ public final class SettingsRepository {
     public void start(Context context) {
         if (mStarted) return;
         mStarted = true;
+        mContextRef = context;
         try {
             BroadcastReceiver receiver = new BroadcastReceiver() {
                 @Override
@@ -124,6 +139,10 @@ public final class SettingsRepository {
             PlatformCompat.registerReceiver(context, receiver, filter,
                     mHandler.get(), true);
             XposedBridge.log("HULFix: settings broadcast receiver registered");
+            // SystemUI 重启后的自动同步：立刻向 App 请求一次全量设置，
+            // 未收到响应前由守卫每 2s 重发（App 冷启动 / 广播丢失兜底）
+            requestSettingsFromApp();
+            startSettingsSyncGuard();
         } catch (Throwable t) {
             mStarted = false;
             XposedBridge.log("HULFix: FAILED to register settings receiver: " + t);
@@ -262,8 +281,12 @@ public final class SettingsRepository {
      *
      * @param source 来源标识（broadcast-json / file / init），仅用于日志排查
      */
+    /** 是否已通过广播通道拿到过设置（用于判断启动同步守卫是否可以停止）。 */
+    private volatile boolean mBroadcastApplied;
+
     private void applySettings(Settings fresh, String source) {
         mSettings = fresh;
+        if ("broadcast-json".equals(source)) mBroadcastApplied = true;
         // 关键链路日志无条件输出（不受 debugLog 开关限制）："改设置不生效"类问题
         // 必须能从 Xposed 日志直接看到设置是否到达、来自哪条通道、值是什么
         XposedBridge.log("HULFix: settings applied (" + source + "), style="
@@ -277,6 +300,46 @@ public final class SettingsRepository {
             }
         }
     }
+
+    /**
+     * 向模块 App 请求一次全量设置同步（SystemUI 重启后的自动同步通道）。
+     *
+     * <p>显式广播到本模块包名：App 进程若未运行会被 AMS 拉起（静态 receiver），
+     * 无需用户手动打开 App。请求发出后由 {@link #startSettingsSyncGuard} 负责
+     * 在未收到响应前定时重发。</p>
+     */
+    private void requestSettingsFromApp() {
+        try {
+            Intent intent = new Intent(ACTION_REQUEST_SETTINGS);
+            intent.setPackage(PKG);
+            mContextRef.sendBroadcast(intent);
+            XposedBridge.log("HULFix: settings sync requested from app");
+        } catch (Throwable t) {
+            XposedBridge.log("HULFix: settings sync request failed: " + t);
+        }
+    }
+
+    /**
+     * 启动同步守卫：每 2s 检查一次，直到通过广播通道收到过一次设置。
+     *
+     * <p>覆盖 App 冷启动慢 / 请求广播丢失的情况；一旦 {@link #mBroadcastApplied}
+     * 置位即停止，之后设置变更照常由 App 主动推送。</p>
+     */
+    private void startSettingsSyncGuard() {
+        if (mContextRef == null) return;
+        mHandler.postDelayed(mSettingsSyncGuard, SETTINGS_SYNC_RETRY_MS);
+    }
+
+    private final Runnable mSettingsSyncGuard = new Runnable() {
+        @Override
+        public void run() {
+            if (mBroadcastApplied) return; // 已同步，任务结束
+            requestSettingsFromApp();
+            mHandler.postDelayed(this, SETTINGS_SYNC_RETRY_MS);
+        }
+    };
+
+    private static final long SETTINGS_SYNC_RETRY_MS = 2000;
 
     /**
      * 从任意 SharedPreferences 源（hook 进程的 XSharedPreferences，或 App 进程的

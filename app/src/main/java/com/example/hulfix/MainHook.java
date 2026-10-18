@@ -77,7 +77,7 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"com.android.systemui".equals(lpparam.packageName)) return;
-        XposedBridge.log(TAG + ": ====== HULFix Overlay v35 (offer-fresh-settings + dual broadcast + file-channel guard) loaded ======");
+        XposedBridge.log(TAG + ": ====== HULFix Overlay v36 (offer-fresh-settings + dual broadcast + file-channel guard + auto-sync-on-boot) loaded ======");
 
         // 1. 拿到 SystemUI Context → 初始化控制器（设置仓库 / 场景检测 / 广播）
         try {

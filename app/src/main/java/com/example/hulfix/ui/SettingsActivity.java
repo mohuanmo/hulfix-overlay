@@ -74,6 +74,14 @@ public class SettingsActivity extends AppCompatActivity {
     private int mCurrent = -1;
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        // App 每次回到前台都主动同步一次全量设置：覆盖"SystemUI 在 App 之前
+        // 重启、请求广播时序竞争"的残余窗口（App 在前台 = 请求必然被响应）
+        SettingsStore.get(this).notifySystemUiNow();
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         SettingsStore.init(this);

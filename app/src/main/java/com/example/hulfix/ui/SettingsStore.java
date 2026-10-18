@@ -102,6 +102,18 @@ public final class SettingsStore {
         mUiHandler.postDelayed(mNotifyRunnable, 150);
     }
 
+    /**
+     * 立即广播通知 SystemUI（不等 150ms 合并）。
+     *
+     * <p>用于 SystemUI 重启后主动请求设置的响应路径：请求方正在等待，晚 150ms
+     * 意味着悬浮窗多用默认设置弹一条。</p>
+     */
+    public void notifySystemUiNow() {
+        if (sContext == null) return;
+        mUiHandler.removeCallbacks(mNotifyRunnable);
+        doNotifySystemUi();
+    }
+
     private void doNotifySystemUi() {
         if (sContext == null) return;
         try {
