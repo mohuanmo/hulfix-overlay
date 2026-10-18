@@ -575,7 +575,9 @@ public final class OverlayController implements GestureHandler.Callback {
      *   <li>先清掉根背景再挂——视图池复用时 root 可能带着上一轮（旧 ViewRootImpl）
      *       的模糊 Drawable，不摘掉会残留失效模糊区域；</li>
      *   <li>渲染阶段已按"模糊会透出"预降背景层透明度，因此任何导致模糊没挂上的
-     *       路径都必须 {@code restoreBgAlpha()} 恢复，否则卡片半透明地浮在桌面上。</li>
+     *       路径都必须 {@code restoreBgAlpha()} 恢复，否则卡片半透明地浮在桌面上；</li>
+     *   <li>反之，挂载成功则必须 {@code applyBlurDiscount()} 把折扣补回来——卡片可能
+     *       来自视图池，上次退场时 {@code detachWindowBlur} 刚恢复过透明度。</li>
      * </ul>
      */
     private void applyWindowBlur(OverlayRenderer.Build b, StyleSpec spec, Settings s) {
@@ -614,6 +616,8 @@ public final class OverlayController implements GestureHandler.Callback {
             int tint = scaleAlpha(pal.bgColors[0], clampAlpha(s.bgAlpha) * 0.30f);
             XposedHelpers.callMethod(drawable, "setColor", tint);
             b.root.setBackground((android.graphics.drawable.Drawable) drawable);
+            // 补回霜面折扣（池化卡片上次退场时被 restoreBgAlpha 恢复过）
+            b.applyBlurDiscount();
         } catch (Throwable t) {
             log("window blur unavailable: " + t);
             b.restoreBgAlpha();
@@ -781,9 +785,36 @@ public final class OverlayController implements GestureHandler.Callback {
             mState = State.EXITING;
             Settings s = mSettingsRepo.get();
             StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson);
+            // 退场开始即摘除有界背景模糊（见 detachWindowBlur 注释）：
+            // 模糊区域由 SurfaceFlinger/Aggregator 合成，不随卡片 alpha 动画淡出，
+            // 若等动画结束才 removeView，卡片飞出后霜面矩形还会停留一整个退场时长。
+            detachWindowBlur();
             AnimPresets.playExit(hostOf(mPooledBuild), spec, s, mPlayer, direction,
                     this::removeOverlayImmediate);
         });
+    }
+
+    /**
+     * 摘除当前浮窗根视图上的有界背景模糊，并恢复背景层设计透明度。
+     *
+     * <p><b>为什么退场第一帧就要摘</b>：{@code BackgroundBlurDrawable} 的模糊区域经
+     * 窗口 Aggregator 汇总成 {@code setBlurRegions} 交给 SurfaceFlinger 合成，
+     * 与视图自身的 alpha / 位移动画<b>完全独立</b>——卡片淡出/飞出时，霜面矩形
+     * 仍以全不透明度停留在原位置，直到 {@code removeView} 才消失。这就是用户反馈的
+     * "收回后模糊层短暂停留一小会儿才销毁"。</p>
+     *
+     * <p>摘除后卡片以"无模糊"设计透明度飞出（渲染阶段按模糊会透出预降过背景 alpha，
+     * 这里负责恢复），观感上就是一张普通卡片正常退场。</p>
+     */
+    private void detachWindowBlur() {
+        OverlayRenderer.Build b = mPooledBuild;
+        if (b == null || b.root == null) return;
+        if (mOverlay != null && mOverlay != b.root) return; // 防御：非当前窗口不动
+        try {
+            b.root.setBackground(null);
+        } catch (Throwable ignored) {
+        }
+        b.restoreBgAlpha();
     }
 
     private void removeOverlayImmediate() {
@@ -813,18 +844,40 @@ public final class OverlayController implements GestureHandler.Callback {
                 // 代际守卫：若此后又发生"重挂窗口 / 新移除"，本次晚到的 removeView 作废，
                 // 防止误删刚挂上的新窗口。
                 final long gen = ++mRemoveGeneration;
-                mHandler.post(() -> {
-                    if (gen != mRemoveGeneration) return;
-                    try {
-                        if (toRemove.getParent() != null) wm.removeView(toRemove);
-                    } catch (Throwable t) {
-                        try {
-                            wm.removeViewImmediate(toRemove);
-                        } catch (Throwable ignored) {
+                // 优先同步移除：调用方（退场动画结束回调 / 主线程消息）通常不在视图
+                // 遍历期，同步摘窗可省掉一次 post 带来的一帧延迟——"卡片已不可见、
+                // 窗口还停留一帧"的残留观感主要靠它消除。遍历期同步移除会抛异常，
+                // 此时回退异步（仍受代际守卫保护）。
+                if (!removeViewNow(wm, toRemove)) {
+                    mHandler.post(() -> {
+                        if (gen != mRemoveGeneration) return;
+                        if (!removeViewNow(wm, toRemove)) {
+                            try {
+                                if (toRemove.getParent() != null) wm.removeView(toRemove);
+                            } catch (Throwable t) {
+                                try {
+                                    wm.removeViewImmediate(toRemove);
+                                } catch (Throwable ignored) {
+                                }
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
+        }
+    }
+
+    /**
+     * 尝试同步移除窗口（已摘除 / 成功移除均返回 true；遍历期抛异常返回 false 由调用方转异步）。
+     */
+    private boolean removeViewNow(WindowManager wm, View v) {
+        try {
+            if (v.getParent() != null) {
+                wm.removeViewImmediate(v);
+            }
+            return true;
+        } catch (Throwable t) {
+            return false;
         }
     }
 

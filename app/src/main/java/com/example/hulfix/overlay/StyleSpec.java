@@ -215,17 +215,21 @@ public final class StyleSpec {
     // ==================== 工具 ====================
 
     /**
-     * 视觉内容哈希：配色 / 几何 / 显隐开关的全量指纹（{@link #toJson()} 的 hashCode）。
+     * 视觉内容哈希：配色 / 几何 / 显隐开关的全量指纹。
      *
      * <p>用途：{@code OverlayController} 的视图池复用判定。旧版 poolKey 只含几何参数，
      * 于是"重新导入一个只改了配色的自定义样式"时复用键不变 → 一直复用旧视图树，
      * 新颜色永远不生效（直到几何参数恰好变化才重建）。本哈希把一切视觉参数纳入。</p>
      *
-     * <p>{@code String.hashCode} 由 Java 规范确定，跨进程（App / SystemUI）取值一致。</p>
+     * <p><b>必须走 {@code toJson().toString().hashCode()}</b>：{@code String.hashCode}
+     * 由 Java 规范确定，跨进程（App / SystemUI）取值一致；而
+     * {@code JSONObject.hashCode()} 是实现定义的——Android 的 {@code android.org.json}
+     * 继承 {@code HashMap}（内容哈希），桌面 org.json 不重写（身份哈希），
+     * 两者取值规则不同，直接拿它做指纹在 JVM 单测与真机上行为会分叉。</p>
      */
     public int contentHash() {
         try {
-            return toJson().hashCode();
+            return toJson().toString().hashCode();
         } catch (JSONException e) {
             return 0;
         }

@@ -179,6 +179,17 @@ public final class Settings {
         }
     }
 
+    /**
+     * 浅拷贝（经 {@link #toJson()} / {@link #fromJson(String)} 往返，天然与字段表同步）。
+     *
+     * <p>用途：设置页预览需要"只改一个开关"的副本而不影响原对象（例如迷你预览
+     * 临时关掉真折射）。失败时返回全新默认实例（防御，不返回 null）。</p>
+     */
+    public Settings copy() {
+        Settings s = fromJson(toJson());
+        return s != null ? s : new Settings();
+    }
+
     // ---------- 集合字段的编解码（SharedPreferences 不存 Set<String>，XSP 的 StringSet 亦不可靠） ----------
 
     public static String encodeSet(Set<String> set) {

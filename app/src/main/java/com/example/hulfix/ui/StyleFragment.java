@@ -6,13 +6,16 @@ import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.Nullable;
 
+import com.example.hulfix.R;
 import com.example.hulfix.core.Settings;
 import com.example.hulfix.overlay.LensEngine;
 import com.example.hulfix.overlay.StyleRegistry;
@@ -99,6 +102,12 @@ public class StyleFragment extends BaseSettingsFragment {
                 prefInt("hulfix_theme_mode", Settings.THEME_AUTO),
                 index -> store.putInt("hulfix_theme_mode", index));
 
+        // ---- 主题颜色（仅影响本 App 界面）----
+        SettingsViews.addSectionHeader(container, "主题颜色");
+        container.addView(buildThemeColorCard());
+        SettingsViews.addNote(container,
+                "主题颜色只影响本 App 的设置界面观感，不影响悬浮窗样式。");
+
         // ---- AGSL 真折射引擎 ----
         SettingsViews.addSectionHeader(container, "真折射引擎（AGSL）");
         if (!LensEngine.isSupported()) {
@@ -160,8 +169,11 @@ public class StyleFragment extends BaseSettingsFragment {
                 "选择 .json / .txt 样式文件", this::pickFile);
         SettingsViews.addEntryItem(container, "粘贴 JSON 导入",
                 "手动粘贴样式定义 JSON", this::pasteJson);
+        SettingsViews.addEntryItem(container, "查看样式规范",
+                "全部字段、取值范围、默认值与示例 JSON", this::showSpecDoc);
         SettingsViews.addNote(container,
-                "样式 JSON 可定义配色、圆角、模糊、描边、字号、动画等参数；导入后立即可选。");
+                "样式 JSON 可定义配色、圆角、模糊、描边、字号、动画等参数；导入后立即可选。"
+                        + "支持单个对象 / 数组 / {\"styles\":[...]} 三种文件形态。");
     }
 
     @Override
@@ -227,8 +239,8 @@ public class StyleFragment extends BaseSettingsFragment {
         int pad = SettingsViews.dp(ctx, 12);
         row.setPadding(pad, pad, pad, pad);
 
-        // 左侧小预览
-        StylePreviewView mini = new StylePreviewView(ctx);
+        // 左侧小预览（轻量模式：跳过 AGSL 着色器编译，见 StylePreviewView 类注释）
+        StylePreviewView mini = StylePreviewView.createLightweight(ctx);
         mini.setSettings(settings);
         mini.setStyle(spec, isDarkNow());
         LinearLayout.LayoutParams miniLp = new LinearLayout.LayoutParams(
@@ -289,6 +301,94 @@ public class StyleFragment extends BaseSettingsFragment {
         return card;
     }
 
+    // ==================== 主题颜色 ====================
+
+    /**
+     * 主题色板：0 = 跟随壁纸动态取色（Material You，Android 12+ 生效）；
+     * 1..8 = 预设种子色，索引与 {@link SettingsActivity} 的叠加层数组一一对应。
+     */
+    private static final int[] THEME_SWATCH_COLORS = {
+            0, // 动态取色：多色渐变圆点
+            R.color.hulfix_seed_1, R.color.hulfix_seed_2, R.color.hulfix_seed_3,
+            R.color.hulfix_seed_4, R.color.hulfix_seed_5, R.color.hulfix_seed_6,
+            R.color.hulfix_seed_7, R.color.hulfix_seed_8,
+    };
+    private static final String[] THEME_SWATCH_NAMES = {
+            "跟随壁纸", "绛紫", "海蓝", "湖青", "松绿", "落日橙", "绯红", "蔷薇粉", "石墨灰"
+    };
+
+    /** 主题色板卡片：横向滚动的圆形色板 + 当前主题标签。 */
+    private View buildThemeColorCard() {
+        android.content.Context ctx = requireContext();
+        com.google.android.material.card.MaterialCardView card =
+                new com.google.android.material.card.MaterialCardView(ctx);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(0, 0, 0, SettingsViews.dp(ctx, 8));
+        card.setLayoutParams(clp);
+        card.setCardElevation(SettingsViews.dp(ctx, 1));
+        card.setRadius(SettingsViews.dp(ctx, 20));
+
+        LinearLayout box = new LinearLayout(ctx);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = SettingsViews.dp(ctx, 16);
+        box.setPadding(pad, SettingsViews.dp(ctx, 12), pad, SettingsViews.dp(ctx, 14));
+
+        int current = prefInt(SettingsActivity.PREF_THEME_SEED, 0);
+        if (current < 0 || current >= THEME_SWATCH_NAMES.length) current = 0;
+        TextView label = new TextView(ctx);
+        label.setText("当前主题：" + THEME_SWATCH_NAMES[current]);
+        label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
+        box.addView(label);
+
+        HorizontalScrollView hsv = new HorizontalScrollView(ctx);
+        hsv.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, SettingsViews.dp(ctx, 10), 0, 0);
+        for (int i = 0; i < THEME_SWATCH_COLORS.length; i++) {
+            View dot = new View(ctx);
+            int size = SettingsViews.dp(ctx, 36);
+            LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(size, size);
+            dlp.setMarginEnd(SettingsViews.dp(ctx, 10));
+            dot.setLayoutParams(dlp);
+            dot.setBackground(swatchDrawable(ctx, i, i == current));
+            dot.setContentDescription(THEME_SWATCH_NAMES[i]);
+            final int index = i;
+            dot.setOnClickListener(v -> {
+                store.putInt(SettingsActivity.PREF_THEME_SEED, index);
+                // 重建 Activity：让新主题贯穿整个设置界面（各页状态由 prefs 持久化保留）
+                requireActivity().recreate();
+            });
+            row.addView(dot);
+        }
+        hsv.addView(row);
+        box.addView(hsv);
+        card.addView(box);
+        return card;
+    }
+
+    /** 单个色板圆点：种子色实心圆；0 号位为四色渐变（寓意动态取色）；选中加描边环。 */
+    private static android.graphics.drawable.GradientDrawable swatchDrawable(
+            android.content.Context ctx, int index, boolean selected) {
+        android.graphics.drawable.GradientDrawable d =
+                new android.graphics.drawable.GradientDrawable();
+        d.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        if (index == 0) {
+            d.setOrientation(android.graphics.drawable.GradientDrawable.Orientation.TL_BR);
+            d.setColors(new int[]{0xFF4285F4, 0xFFEA4335, 0xFFFBBC04, 0xFF34A853});
+        } else {
+            d.setColor(androidx.core.content.ContextCompat.getColor(
+                    ctx, THEME_SWATCH_COLORS[index]));
+        }
+        if (selected) {
+            int ring = com.google.android.material.color.MaterialColors.getColor(ctx,
+                    com.google.android.material.R.attr.colorOnSurface, 0xFF000000);
+            d.setStroke(SettingsViews.dp(ctx, 3), ring);
+        }
+        return d;
+    }
+
     private String styleDescription(StyleSpec spec) {
         switch (spec.id) {
             case "standard":
@@ -340,6 +440,39 @@ public class StyleFragment extends BaseSettingsFragment {
                 .setPositiveButton("导入", (d, w) ->
                         importJson(input.getText().toString()))
                 .show();
+    }
+
+    /** 展示内置的完整样式规范（字段 / 取值范围 / 默认值 / 示例）。 */
+    private void showSpecDoc() {
+        android.content.Context ctx = requireContext();
+        TextView tv = new TextView(ctx);
+        tv.setText(StyleImportDoc.SPEC_TEXT);
+        tv.setTypeface(android.graphics.Typeface.MONOSPACE);
+        tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
+        int pad = SettingsViews.dp(ctx, 16);
+        tv.setPadding(pad, pad, pad, pad);
+        ScrollView scroll = new ScrollView(ctx);
+        scroll.addView(tv);
+        scroll.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, SettingsViews.dp(ctx, 380)));
+        new MaterialAlertDialogBuilder(ctx)
+                .setTitle("自定义样式规范")
+                .setView(scroll)
+                .setNeutralButton("复制示例", (d, w) -> copyExample())
+                .setPositiveButton("知道了", null)
+                .show();
+    }
+
+    private void copyExample() {
+        try {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    requireContext().getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(android.content.ClipData.newPlainText(
+                    "hulfix-style", StyleImportDoc.EXAMPLE_JSON));
+            toast("示例 JSON 已复制，可用「粘贴 JSON 导入」直接导入");
+        } catch (Throwable t) {
+            toast("复制失败：" + t.getMessage());
+        }
     }
 
     private void importJson(String json) {

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- HULFix 主题种子色（深色）：由种子色近似推导的 M3 色调角色，
+         仅供 ThemeOverlay.HULFix.Seed* 引用；仅覆盖强调色角色，背景/表面保持中性。 -->
+    <!-- 种子本色（设置页色板圆点填充色） -->
+    <color name="hulfix_seed_1">#6750A4</color>
+    <color name="hulfix_seed_2">#0B57D0</color>
+    <color name="hulfix_seed_3">#00A0A0</color>
+    <color name="hulfix_seed_4">#1E8E3E</color>
+    <color name="hulfix_seed_5">#E8710A</color>
+    <color name="hulfix_seed_6">#D93025</color>
+    <color name="hulfix_seed_7">#E91E63</color>
+    <color name="hulfix_seed_8">#5F6368</color>
+
+    <color name="hulfix_seed_1_primary">#C4BADE</color>
+    <color name="hulfix_seed_1_onPrimary">#2B2145</color>
+    <color name="hulfix_seed_1_primaryContainer">#413267</color>
+    <color name="hulfix_seed_1_onPrimaryContainer">#E2DDEE</color>
+    <color name="hulfix_seed_1_secondary">#C9C6D2</color>
+    <color name="hulfix_seed_1_onSecondary">#2B2145</color>
+    <color name="hulfix_seed_1_secondaryContainer">#484356</color>
+    <color name="hulfix_seed_1_onSecondaryContainer">#E4E2E9</color>
+
+    <color name="hulfix_seed_2_primary">#9EC2FA</color>
+    <color name="hulfix_seed_2_onPrimary">#052961</color>
+    <color name="hulfix_seed_2_primaryContainer">#083D91</color>
+    <color name="hulfix_seed_2_onPrimaryContainer">#CFE0FC</color>
+    <color name="hulfix_seed_2_secondary">#BCC8DC</color>
+    <color name="hulfix_seed_2_onSecondary">#052961</color>
+    <color name="hulfix_seed_2_secondaryContainer">#344765</color>
+    <color name="hulfix_seed_2_onSecondaryContainer">#DDE4EE</color>
+
+    <color name="hulfix_seed_3_primary">#99FFFF</color>
+    <color name="hulfix_seed_3_onPrimary">#006666</color>
+    <color name="hulfix_seed_3_primaryContainer">#009999</color>
+    <color name="hulfix_seed_3_onPrimaryContainer">#CCFFFF</color>
+    <color name="hulfix_seed_3_secondary">#BADEDE</color>
+    <color name="hulfix_seed_3_onSecondary">#006666</color>
+    <color name="hulfix_seed_3_secondaryContainer">#326767</color>
+    <color name="hulfix_seed_3_onSecondaryContainer">#DDEEEE</color>
+
+    <color name="hulfix_seed_4_primary">#ABEDBE</color>
+    <color name="hulfix_seed_4_onPrimary">#125425</color>
+    <color name="hulfix_seed_4_primaryContainer">#1B7E37</color>
+    <color name="hulfix_seed_4_onPrimaryContainer">#D5F6DE</color>
+    <color name="hulfix_seed_4_secondary">#C0D8C7</color>
+    <color name="hulfix_seed_4_onSecondary">#125425</color>
+    <color name="hulfix_seed_4_secondaryContainer">#3B5E45</color>
+    <color name="hulfix_seed_4_onSecondaryContainer">#E0EBE3</color>
+
+    <color name="hulfix_seed_5_primary">#FBC99D</color>
+    <color name="hulfix_seed_5_onPrimary">#623004</color>
+    <color name="hulfix_seed_5_primaryContainer">#934706</color>
+    <color name="hulfix_seed_5_onPrimaryContainer">#FDE4CE</color>
+    <color name="hulfix_seed_5_secondary">#DCCBBC</color>
+    <color name="hulfix_seed_5_onSecondary">#623004</color>
+    <color name="hulfix_seed_5_secondaryContainer">#654B34</color>
+    <color name="hulfix_seed_5_onSecondaryContainer">#EEE5DD</color>
+
+    <color name="hulfix_seed_6_primary">#F0ACA8</color>
+    <color name="hulfix_seed_6_onPrimary">#57130F</color>
+    <color name="hulfix_seed_6_primaryContainer">#831D16</color>
+    <color name="hulfix_seed_6_onPrimaryContainer">#F8D6D3</color>
+    <color name="hulfix_seed_6_secondary">#D9C1BF</color>
+    <color name="hulfix_seed_6_onSecondary">#57130F</color>
+    <color name="hulfix_seed_6_secondaryContainer">#5F3C3A</color>
+    <color name="hulfix_seed_6_onSecondaryContainer">#ECE0DF</color>
+
+    <color name="hulfix_seed_7_primary">#F6A2BF</color>
+    <color name="hulfix_seed_7_onPrimary">#5D0926</color>
+    <color name="hulfix_seed_7_primaryContainer">#8B0E38</color>
+    <color name="hulfix_seed_7_onPrimaryContainer">#FAD1DF</color>
+    <color name="hulfix_seed_7_secondary">#DBBDC7</color>
+    <color name="hulfix_seed_7_onSecondary">#5D0926</color>
+    <color name="hulfix_seed_7_secondaryContainer">#633645</color>
+    <color name="hulfix_seed_7_onSecondaryContainer">#EDDEE3</color>
+
+    <color name="hulfix_seed_8_primary">#CACCCE</color>
+    <color name="hulfix_seed_8_onPrimary">#313335</color>
+    <color name="hulfix_seed_8_primaryContainer">#494C50</color>
+    <color name="hulfix_seed_8_onPrimaryContainer">#E4E5E7</color>
+    <color name="hulfix_seed_8_secondary">#CBCCCD</color>
+    <color name="hulfix_seed_8_onSecondary">#313335</color>
+    <color name="hulfix_seed_8_secondaryContainer">#4B4C4E</color>
+    <color name="hulfix_seed_8_onSecondaryContainer">#E5E5E6</color>
+
+</resources>

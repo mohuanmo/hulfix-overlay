@@ -57,6 +57,9 @@ public final class OverlayRenderer {
          * <p>有界背景模糊挂载失败（个别 ROM 反射不可达）时由控制器调用：渲染阶段
          * 已按"模糊会透出"预降了背景层不透明度，若不恢复，卡片将半透明地直接浮
          * 在桌面上，文字可读性受损。</p>
+         *
+         * <p>退场摘除模糊（{@code detachWindowBlur}）时同样调用：让卡片以正常
+         * 不透明度飞出。</p>
          */
         public void restoreBgAlpha() {
             if (bgColorsRaw == null) return;
@@ -67,6 +70,30 @@ public final class OverlayRenderer {
                 int[] colors = new int[bgColorsRaw.length];
                 for (int i = 0; i < colors.length; i++) {
                     colors[i] = scaleAlpha(bgColorsRaw[i], bgAlphaUserScale);
+                }
+                ((GradientDrawable) bgLayer.getBackground()).setColors(colors);
+            }
+        }
+
+        /**
+         * 把背景层 alpha 打到"霜面"折扣值（模糊激活设计值）。
+         *
+         * <p>{@code applyWindowBlur} 挂载成功后必须调用：卡片可能来自视图池——
+         * 上次退场时 {@link #restoreBgAlpha()} 刚把透明度恢复过，不补回折扣的话
+         * 卡片会以全不透明度浮在霜面上，把背景模糊完全遮住（磨砂变纯色）。</p>
+         *
+         * <p>幂等：数据源是 {@link #bgColorsRaw}（未缩放原色），重复调用结果一致。</p>
+         */
+        public void applyBlurDiscount() {
+            if (bgColorsRaw == null) return;
+            float scale = bgAlphaUserScale * BLUR_BG_DISCOUNT;
+            if (lensView != null) {
+                lensView.setBackdropColors(bgColorsRaw, scale);
+            } else if (bgLayer != null
+                    && bgLayer.getBackground() instanceof GradientDrawable) {
+                int[] colors = new int[bgColorsRaw.length];
+                for (int i = 0; i < colors.length; i++) {
+                    colors[i] = scaleAlpha(bgColorsRaw[i], scale);
                 }
                 ((GradientDrawable) bgLayer.getBackground()).setColors(colors);
             }

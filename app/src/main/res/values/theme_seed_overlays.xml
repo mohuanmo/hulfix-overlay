@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- HULFix 主题色叠加层：经 Theme#applyStyle(res, true) 应用到活动主题之上。
+         仅覆盖强调色相关角色（colorPrimary / container / secondary 系），
+         中性色（背景/表面/文字）沿用基础主题，因此单一定义即可适配深浅色
+         （颜色引用在视图读取属性时才解析，自动命中 values-night 变体）。 -->
+
+    <style name="ThemeOverlay.HULFix.Seed1" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_1_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_1_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_1_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_1_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_1_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_1_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_1_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_1_onSecondaryContainer</item>
+    </style>
+
+    <style name="ThemeOverlay.HULFix.Seed2" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_2_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_2_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_2_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_2_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_2_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_2_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_2_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_2_onSecondaryContainer</item>
+    </style>
+
+    <style name="ThemeOverlay.HULFix.Seed3" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_3_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_3_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_3_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_3_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_3_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_3_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_3_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_3_onSecondaryContainer</item>
+    </style>
+
+    <style name="ThemeOverlay.HULFix.Seed4" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_4_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_4_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_4_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_4_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_4_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_4_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_4_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_4_onSecondaryContainer</item>
+    </style>
+
+    <style name="ThemeOverlay.HULFix.Seed5" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_5_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_5_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_5_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_5_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_5_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_5_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_5_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_5_onSecondaryContainer</item>
+    </style>
+
+    <style name="ThemeOverlay.HULFix.Seed6" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_6_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_6_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_6_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_6_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_6_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_6_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_6_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_6_onSecondaryContainer</item>
+    </style>
+
+    <style name="ThemeOverlay.HULFix.Seed7" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_7_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_7_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_7_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_7_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_7_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_7_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_7_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_7_onSecondaryContainer</item>
+    </style>
+
+    <style name="ThemeOverlay.HULFix.Seed8" parent="">
+        <item name="colorPrimary">@color/hulfix_seed_8_primary</item>
+        <item name="colorOnPrimary">@color/hulfix_seed_8_onPrimary</item>
+        <item name="colorPrimaryContainer">@color/hulfix_seed_8_primaryContainer</item>
+        <item name="colorOnPrimaryContainer">@color/hulfix_seed_8_onPrimaryContainer</item>
+        <item name="colorSecondary">@color/hulfix_seed_8_secondary</item>
+        <item name="colorOnSecondary">@color/hulfix_seed_8_onSecondary</item>
+        <item name="colorSecondaryContainer">@color/hulfix_seed_8_secondaryContainer</item>
+        <item name="colorOnSecondaryContainer">@color/hulfix_seed_8_onSecondaryContainer</item>
+    </style>
+
+</resources>
