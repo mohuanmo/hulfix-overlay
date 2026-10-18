@@ -2,18 +2,48 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.hulfix">
 
-    <application
-        android:label="HULFix Overlay"
-        android:icon="@android:drawable/ic_dialog_info">
+    <!-- 读取全部已安装应用（含系统应用），供黑名单 / 白名单 / 前台抑制列表选择。
+         Android 11+ 包可见性过滤默认只返回少量应用，必须显式声明此权限，
+         否则应用选择对话框读到的应用极少。模块为侧载 Xposed 模块，正常使用无合规问题。 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_notification"
+        android:theme="@style/Theme.HULFix">
+
+        <!-- Xposed 模块标识 -->
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="Custom Heads-Up notification overlay for LineageOS 20 landscape mode" />
+            android:value="Custom Heads-Up notification overlay — engine, styles &amp; gestures" />
         <meta-data
             android:name="xposedminversion"
             android:value="93" />
+
+        <!-- 设置界面（启动器入口） -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 接收悬浮窗控制器（SystemUI 进程）回报的事件 -->
+        <receiver
+            android:name=".ui.StatsReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.hulfix.action.STAT_EVENT" />
+            </intent-filter>
+        </receiver>
     </application>
+
 </manifest>

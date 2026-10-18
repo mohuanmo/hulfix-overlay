@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HULFix</string>
+    <string name="app_subtitle">悬浮通知 · 引擎 v2</string>
+    <string name="nav_style">样式</string>
+    <string name="nav_anim">动画</string>
+    <string name="nav_position">位置</string>
+    <string name="nav_apps">应用</string>
+    <string name="nav_engine">引擎</string>
+</resources>

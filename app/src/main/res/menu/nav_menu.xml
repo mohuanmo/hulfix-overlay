@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <group android:checkableBehavior="single">
+        <item
+            android:id="@+id/nav_style"
+            android:icon="@drawable/ic_palette"
+            android:title="@string/nav_style" />
+        <item
+            android:id="@+id/nav_anim"
+            android:icon="@drawable/ic_animation"
+            android:title="@string/nav_anim" />
+        <item
+            android:id="@+id/nav_position"
+            android:icon="@drawable/ic_place"
+            android:title="@string/nav_position" />
+        <item
+            android:id="@+id/nav_apps"
+            android:icon="@drawable/ic_apps"
+            android:title="@string/nav_apps" />
+        <item
+            android:id="@+id/nav_engine"
+            android:icon="@drawable/ic_engine"
+            android:title="@string/nav_engine" />
+    </group>
+</menu>
