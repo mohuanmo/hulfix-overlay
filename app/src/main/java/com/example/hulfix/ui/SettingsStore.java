@@ -105,14 +105,27 @@ public final class SettingsStore {
     private void doNotifySystemUi() {
         if (sContext == null) return;
         try {
-            Intent intent = new Intent(SettingsRepository.ACTION_SETTINGS_CHANGED);
-            intent.setPackage("com.android.systemui");
-            // 全量设置随广播下发：SystemUI 被 SELinux 挡住读不到 App 私有目录时
-            // （XSharedPreferences / mtime 均不可靠），这条 extra 是唯一可靠通道。
-            intent.putExtra(SettingsRepository.EXTRA_SETTINGS_JSON,
-                    SettingsRepository.readSettings(mPrefs).toJson());
-            sContext.sendBroadcast(intent);
-        } catch (Throwable ignored) {
+            String json = SettingsRepository.readSettings(mPrefs).toJson();
+            // 通道 1（主）：显式指定 SystemUI 包名，跨进程直达
+            try {
+                Intent intent = new Intent(SettingsRepository.ACTION_SETTINGS_CHANGED);
+                intent.setPackage("com.android.systemui");
+                intent.putExtra(SettingsRepository.EXTRA_SETTINGS_JSON, json);
+                sContext.sendBroadcast(intent);
+            } catch (Throwable ignored) {
+            }
+            // 通道 2（冗余）：不带包名的隐式广播——动态注册的接收器可以收到，
+            // 覆盖个别 ROM SystemUI 包名变体 / 显式广播被裁剪的情况。
+            // 两条都送达时 hook 端解析两次相同 JSON，幂等无副作用。
+            try {
+                Intent intent2 = new Intent(SettingsRepository.ACTION_SETTINGS_CHANGED);
+                intent2.putExtra(SettingsRepository.EXTRA_SETTINGS_JSON, json);
+                sContext.sendBroadcast(intent2);
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable t) {
+            // 构造/序列化失败绝不能再静默：这正是"改设置不生效"最难排查的形态
+            android.util.Log.e("HULFix", "doNotifySystemUi failed", t);
         }
     }
 

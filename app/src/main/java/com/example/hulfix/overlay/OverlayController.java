@@ -143,7 +143,7 @@ public final class OverlayController implements GestureHandler.Callback {
         // 不必等系统重启，也不必等"下一条通知"。
         mSettingsRepo.addListener(this::onSettingsReloaded);
         registerScreenReceiver(context);
-        log("controller initialized");
+        logAlways("controller initialized (offer-fresh-settings active)");
     }
 
     /**
@@ -172,12 +172,14 @@ public final class OverlayController implements GestureHandler.Callback {
                 boolean positionChanged = s.anchor != mAppliedAnchor
                         || s.offsetXDp != mAppliedOffsetX || s.offsetYDp != mAppliedOffsetY;
                 if (!poolKeyFor(s, spec, isDark(s)).equals(mPooledKey)) {
-                    log("settings changed while showing, restyling");
+                    logAlways("settings changed while showing, restyling (style="
+                            + spec.id + ")");
                     restyleNow(s);
                     return;
                 }
                 if (positionChanged && mPooledBuild != null) {
-                    log("position changed while showing, moving window");
+                    logAlways("position changed while showing, moving window to "
+                            + s.anchor + " (" + s.offsetXDp + "," + s.offsetYDp + ")");
                     WindowManager.LayoutParams params =
                             buildLayoutParams(s, spec, mPooledBuild, mActiveWindowType);
                     mWindowManager.updateViewLayout(mOverlay, params);
@@ -186,7 +188,7 @@ public final class OverlayController implements GestureHandler.Callback {
                     mAppliedOffsetY = s.offsetYDp;
                 }
             } catch (Throwable t) {
-                log("settings-reload error: " + t);
+                logAlways("settings-reload error: " + t);
             }
         });
     }
@@ -219,7 +221,9 @@ public final class OverlayController implements GestureHandler.Callback {
 
     public void offer(StatusBarNotification sbn) {
         if (sbn == null) return;
-        Settings s = mSettingsRepo.get();
+        // 每条通知决策前同步重读设置（150ms 节流，见 getFresh）：广播 / 文件轮询
+        // 任一通道失效都不再影响"改设置必须生效"，这是设置链路的最后一道保险
+        Settings s = mSettingsRepo.getFresh();
         if (!s.enabled) return;
 
         CooldownEngine.SbnInfo info = buildSbnInfo(s, sbn);
@@ -352,7 +356,8 @@ public final class OverlayController implements GestureHandler.Callback {
                 }
                 startRingProgress(build, s, spec);
                 scheduleAutoDismiss(s);
-                log("shown: " + nc.title);
+                logAlways("shown: " + nc.title + " (style=" + spec.id
+                        + " anchor=" + s.anchor + ")");
             } catch (Throwable t) {
                 log("show error: " + t);
             }
@@ -1283,5 +1288,10 @@ public final class OverlayController implements GestureHandler.Callback {
         if (s != null && s.debugLog) {
             XposedBridge.log("HULFix: " + msg);
         }
+    }
+
+    /** 关键链路日志：无条件输出（设置到达 / 窗口移动 / 样式重绘），用于排查"改设置不生效"。 */
+    private void logAlways(String msg) {
+        XposedBridge.log("HULFix: " + msg);
     }
 }

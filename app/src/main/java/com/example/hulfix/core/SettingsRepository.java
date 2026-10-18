@@ -105,10 +105,15 @@ public final class SettingsRepository {
                             ? intent.getStringExtra(EXTRA_SETTINGS_JSON) : null;
                     Settings fresh = Settings.fromJson(json);
                     if (fresh != null) {
+                        XposedBridge.log("HULFix: settings broadcast received ("
+                                + (json == null ? 0 : json.length()) + " chars)");
                         mHandler.post(() -> applySettings(fresh, "broadcast-json"));
                         return;
                     }
                     // 兜底：老版本 App 或不带 JSON 的广播 → 走文件通道
+                    XposedBridge.log("HULFix: settings broadcast without valid json, "
+                            + "falling back to file (len="
+                            + (json == null ? -1 : json.length()) + ")");
                     reload();
                 }
             };
@@ -118,15 +123,42 @@ public final class SettingsRepository {
             // 收不到跨进程广播
             PlatformCompat.registerReceiver(context, receiver, filter,
                     mHandler.get(), true);
-        } catch (Throwable ignored) {
+            XposedBridge.log("HULFix: settings broadcast receiver registered");
+        } catch (Throwable t) {
             mStarted = false;
+            XposedBridge.log("HULFix: FAILED to register settings receiver: " + t);
         }
     }
 
-    /** Force a fresh read from the backing store. */
+    /**
+     * Force a fresh read from the backing store. */
     public void reload() {
         mHandler.post(this::readAll);
     }
+
+    /**
+     * 同步重读设置并返回最新快照（每条通知进入时调用，150ms 节流）。
+     *
+     * <p><b>为什么存在</b>：设置到 hook 进程的通道有两条（App 广播全量 JSON / 文件轮询），
+     * 任何一条失效（部分 ROM 上 SystemUI 收不到跨进程显式广播，或 SELinux 挡住文件读取）
+     * 都表现为"改设置永远不生效"。本方法让每条通知在决策前<b>同步</b>重读一次文件，
+     * 只要文件可读就必然用最新设置，不再依赖广播是否送达；文件读不到时靠广播通道。
+     * 节流窗口与 App 端广播合并间隔一致（150ms），高频 hook 点不会放大读盘。</p>
+     */
+    public Settings getFresh() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - mLastFreshRead >= FRESH_THROTTLE_MS) {
+            mLastFreshRead = now;
+            try {
+                readAll();
+            } catch (Throwable ignored) {
+            }
+        }
+        return mSettings;
+    }
+
+    private static final long FRESH_THROTTLE_MS = 150;
+    private long mLastFreshRead = -FRESH_THROTTLE_MS;
 
     /**
      * Returns the current settings. Cheap: reloads from disk only when the preference
@@ -200,6 +232,7 @@ public final class SettingsRepository {
         try {
             fresh = readSettings(mPrefs);
         } catch (Throwable t) {
+            XposedBridge.log("HULFix: FAILED to read settings from prefs file: " + t);
             return;
         }
         if (revision >= 0) mLastRevision = revision;
@@ -219,11 +252,12 @@ public final class SettingsRepository {
      */
     private void applySettings(Settings fresh, String source) {
         mSettings = fresh;
-        if (fresh.debugLog) {
-            XposedBridge.log("HULFix: settings applied (" + source + "), style="
-                    + fresh.styleId + " anchor=" + fresh.anchor
-                    + " offsetX=" + fresh.offsetXDp + " offsetY=" + fresh.offsetYDp);
-        }
+        // 关键链路日志无条件输出（不受 debugLog 开关限制）："改设置不生效"类问题
+        // 必须能从 Xposed 日志直接看到设置是否到达、来自哪条通道、值是什么
+        XposedBridge.log("HULFix: settings applied (" + source + "), style="
+                + fresh.styleId + " anchor=" + fresh.anchor
+                + " offsetX=" + fresh.offsetXDp + " offsetY=" + fresh.offsetYDp
+                + " enabled=" + fresh.enabled);
         for (Listener l : mListeners) {
             try {
                 l.onSettingsReloaded(fresh);
