@@ -1,0 +1,16 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml:2:13-83
+INJECTED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml:2:13-83
+	package
+		INJECTED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml
+	xmlns:android
+		ADDED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml:2:23-81
+uses-sdk
+INJECTED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml reason: use-sdk injection requested
+INJECTED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml
+INJECTED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml
+	android:targetSdkVersion
+		INJECTED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml
+	android:minSdkVersion
+		INJECTED from /workspace/hulfix-overlay/stub/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest7915367124832820305.xml

@@ -21,5 +21,9 @@
             android:id="@+id/nav_engine"
             android:icon="@drawable/ic_engine"
             android:title="@string/nav_engine" />
+        <item
+            android:id="@+id/nav_plugins"
+            android:icon="@drawable/ic_plugin"
+            android:title="@string/nav_plugins" />
     </group>
 </menu>

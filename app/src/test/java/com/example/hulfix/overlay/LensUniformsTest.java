@@ -109,4 +109,66 @@ public class LensUniformsTest {
         assertTrue(u.thicknessPx > 0);
         assertTrue(u.ior > 1f);
     }
+
+    // ==================== 动态光效字段 ====================
+
+    @Test
+    public void createCarriesStaticDynamicDefaults() {
+        // 9 参构造（旧路径）必须自带合法的动态默认值，保证着色器不收到未定义 uniform
+        LensUniforms u = LensUniforms.create(10f, 8f, 14f, 0.5f, 0.2f, 1f, 1.5f, WHITE, 0f);
+        assertEquals(LensUniforms.DEFAULT_LIGHT_X, u.lightX, 0.0001f);
+        assertEquals(LensUniforms.DEFAULT_LIGHT_Y, u.lightY, 0.0001f);
+        assertEquals(LensUniforms.DEFAULT_AMBIENT, u.ambient, 0.0001f);
+        assertEquals(LensUniforms.DEFAULT_SHADOW, u.shadow, 0.0001f);
+        assertEquals(LensUniforms.DEFAULT_FLOW_PHASE, u.flowPhase, 0.0001f);
+    }
+
+    @Test
+    public void createDynamicClampsAllDynamicFields() {
+        LensUniforms u = LensUniforms.createDynamic(
+                10f, 8f, 14f, 0.5f, 0.2f, 1f, 1.5f, WHITE, 1f,
+                99f, -99f, 99f, -99f, 99f);
+        assertEquals(LensUniforms.MAX_LIGHT_DIR, u.lightX, 0.0001f);
+        assertEquals(-LensUniforms.MAX_LIGHT_DIR, u.lightY, 0.0001f);
+        assertEquals(LensUniforms.MAX_AMBIENT, u.ambient, 0.0001f);
+        assertEquals(0f, u.shadow, 0.0001f);
+        assertEquals(LensUniforms.TWO_PI, u.flowPhase, 0.0001f);
+    }
+
+    @Test
+    public void createDynamicNaNFallsBack() {
+        LensUniforms u = LensUniforms.createDynamic(
+                10f, 8f, 14f, 0.5f, 0.2f, 1f, 1.5f, WHITE, 1f,
+                Float.NaN, Float.NaN, Float.NaN, Float.NaN, Float.NaN);
+        assertEquals(0f, u.lightX, 0.0001f);   // NaN → 方向下限 0（回中）
+        assertEquals(0f, u.lightY, 0.0001f);
+        assertEquals(0f, u.ambient, 0.0001f);
+        assertEquals(0f, u.shadow, 0.0001f);
+        assertEquals(0f, u.flowPhase, 0.0001f);
+    }
+
+    @Test
+    public void withDynamicKeepsStaticFields() {
+        LensUniforms base = LensUniforms.create(30f, 12f, 14f, 0.75f, 0.35f, 1f, 1.5f, 0xFF112233, 2f);
+        LensUniforms dyn = base.withDynamic(-0.5f, 0.25f, 0.8f, 0.1f, 1.5f);
+        // 静态外观参数原样保留
+        assertEquals(30f, dyn.radiusPx, 0.0001f);
+        assertEquals(1.5f, dyn.ior, 0.0001f);
+        assertEquals(0xFF112233, dyn.highlightArgb());
+        // 动态字段按新值
+        assertEquals(-0.5f, dyn.lightX, 0.0001f);
+        assertEquals(0.25f, dyn.lightY, 0.0001f);
+        assertEquals(0.8f, dyn.ambient, 0.0001f);
+        assertEquals(0.1f, dyn.shadow, 0.0001f);
+        assertEquals(1.5f, dyn.flowPhase, 0.0001f);
+    }
+
+    @Test
+    public void dynamicFieldsParticipateInEquals() {
+        LensUniforms a = LensUniforms.create(10f, 8f, 14f, 0.5f, 0.2f, 1f, 1.5f, WHITE, 1f)
+                .withDynamic(0.1f, 0.2f, 0.3f, 0.4f, 0.5f);
+        LensUniforms b = LensUniforms.create(10f, 8f, 14f, 0.5f, 0.2f, 1f, 1.5f, WHITE, 1f)
+                .withDynamic(0.1f, 0.2f, 0.3f, 0.4f, 0.6f);
+        assertNotEquals(a, b);
+    }
 }

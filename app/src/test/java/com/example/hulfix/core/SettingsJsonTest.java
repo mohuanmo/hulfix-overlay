@@ -56,6 +56,10 @@ public class SettingsJsonTest {
         s.lensDispersion = 0.9f;
         s.lensSpecular = 1.5f;
         s.lensIOR = 1.8f;
+        s.lensDynamic = false;
+        s.lensDynamicStrength = 0.55f;
+        s.lensAdaptiveShadow = 0.72f;
+        s.lensAccentFollow = true;
 
         s.autoDismissMs = 4321;
         s.showAppName = false;
@@ -133,6 +137,10 @@ public class SettingsJsonTest {
         assertEquals(expected.lensDispersion, actual.lensDispersion, 0.001f);
         assertEquals(expected.lensSpecular, actual.lensSpecular, 0.001f);
         assertEquals(expected.lensIOR, actual.lensIOR, 0.001f);
+        assertEquals(expected.lensDynamic, actual.lensDynamic);
+        assertEquals(expected.lensDynamicStrength, actual.lensDynamicStrength, 0.001f);
+        assertEquals(expected.lensAdaptiveShadow, actual.lensAdaptiveShadow, 0.001f);
+        assertEquals(expected.lensAccentFollow, actual.lensAccentFollow);
 
         assertEquals(expected.autoDismissMs, actual.autoDismissMs);
         assertEquals(expected.showAppName, actual.showAppName);

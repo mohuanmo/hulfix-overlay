@@ -40,6 +40,14 @@ public final class GestureHandler implements View.OnTouchListener {
         void onDragEnd(boolean hasMoved);
 
         void onPressFeedback(boolean down);
+
+        /**
+         * 触摸光源（归一化 -1..1，相对被触摸视图中心；y 向下为正）。
+         *
+         * <p>动态光效引擎用：手指按在玻璃上时，镜面高光跟随手指位置，
+         * 抬手后光源平滑游弋回默认方向。down=false 表示光源脱手。</p>
+         */
+        void onLightTouch(float nx, float ny, boolean down);
     }
 
     private static final float DIRECTION_LOCK_SLOP = 25f;
@@ -55,6 +63,8 @@ public final class GestureHandler implements View.OnTouchListener {
     private float mMaxDx, mMaxDy;
     private VelocityTracker mTracker;
     private boolean mLongPressFired;
+    /** onScreenLocation 复用数组（MOVE 事件高频，避免每帧分配）。 */
+    private final int[] mLocation = new int[2];
     private final Runnable mLongPressRunnable = new Runnable() {
         @Override
         public void run() {
@@ -89,6 +99,7 @@ public final class GestureHandler implements View.OnTouchListener {
                 mTracker = VelocityTracker.obtain();
                 mTracker.addMovement(event);
                 mCallback.onPressFeedback(true);
+                reportLight(v, event, true);
                 if (mSettings.gestureLongPress) {
                     v.postDelayed(mLongPressRunnable, 500);
                 }
@@ -99,6 +110,7 @@ public final class GestureHandler implements View.OnTouchListener {
                 float dy = event.getRawY() - mStartY;
                 float distance = (float) Math.sqrt(dx * dx + dy * dy);
 
+                reportLight(v, event, true);
                 if (!mLockedHorizontal && !mLockedVertical && distance > DIRECTION_LOCK_SLOP) {
                     mHasMoved = true;
                     v.removeCallbacks(mLongPressRunnable);
@@ -139,12 +151,14 @@ public final class GestureHandler implements View.OnTouchListener {
                 v.removeCallbacks(mLongPressRunnable);
                 recycleTracker();
                 mCallback.onPressFeedback(false);
+                reportLight(v, event, false);
                 mCallback.onDragEnd(mHasMoved);
                 return true;
 
             case MotionEvent.ACTION_UP: {
                 v.removeCallbacks(mLongPressRunnable);
                 mCallback.onPressFeedback(false);
+                reportLight(v, event, false);
                 float totalDx = event.getRawX() - mStartX;
                 float totalDy = event.getRawY() - mStartY;
                 float vx = 0f, vy = 0f;
@@ -217,5 +231,29 @@ public final class GestureHandler implements View.OnTouchListener {
             mTracker.recycle();
             mTracker = null;
         }
+    }
+
+    /**
+     * 把触点换算成相对视图中心的光源位置（归一化 -1..1）回报给控制器。
+     *
+     * <p>动态光效引擎的输入：手指即光源。触点可能在视图外（按下后滑出卡片），
+     * 归一化后由引擎侧钳制，这里只负责换算与缩放。</p>
+     */
+    private void reportLight(View v, MotionEvent event, boolean down) {
+        if (!down) {
+            mCallback.onLightTouch(0f, 0f, false);
+            return;
+        }
+        int w = v.getWidth();
+        int h = v.getHeight();
+        if (w <= 0 || h <= 0) return;
+        v.getLocationOnScreen(mLocation);
+        float nx = (event.getRawX() - (mLocation[0] + w * 0.5f)) / (w * 0.5f);
+        float ny = (event.getRawY() - (mLocation[1] + h * 0.5f)) / (h * 0.5f);
+        if (nx < -1f) nx = -1f;
+        if (nx > 1f) nx = 1f;
+        if (ny < -1f) ny = -1f;
+        if (ny > 1f) ny = 1f;
+        mCallback.onLightTouch(nx, ny, true);
     }
 }

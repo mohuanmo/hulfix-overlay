@@ -30,11 +30,12 @@ import com.google.android.material.navigationrail.NavigationRailView;
 public class SettingsActivity extends AppCompatActivity {
 
     private static final int[] NAV_IDS = {
-            R.id.nav_style, R.id.nav_anim, R.id.nav_position, R.id.nav_apps, R.id.nav_engine
+            R.id.nav_style, R.id.nav_anim, R.id.nav_position, R.id.nav_apps, R.id.nav_engine,
+            R.id.nav_plugins
     };
     private static final int[] TITLE_IDS = {
             R.string.nav_style, R.string.nav_anim, R.string.nav_position,
-            R.string.nav_apps, R.string.nav_engine
+            R.string.nav_apps, R.string.nav_engine, R.string.nav_plugins
     };
 
     /**
@@ -66,7 +67,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private final Fragment[] mFragments = {
             new StyleFragment(), new AnimFragment(), new PositionFragment(),
-            new AppsFragment(), new EngineFragment()
+            new AppsFragment(), new EngineFragment(), new PluginsFragment()
     };
 
     private BottomNavigationView mBottomNav;

@@ -83,7 +83,7 @@ public class PositionFragment extends BaseSettingsFragment {
         }
         if (mPreview != null) {
             Settings settings = currentSettings();
-            StyleSpec spec = StyleRegistry.byId(settings.styleId, settings.customStylesJson);
+            StyleSpec spec = StyleRegistry.byId(settings.styleId, settings.customStylesJson, settings.styleOverridesJson);
             mPreview.setSettings(settings);
             mPreview.setStyle(spec, isDarkNow());
             mPreview.playEnter();

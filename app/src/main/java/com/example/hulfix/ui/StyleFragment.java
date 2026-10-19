@@ -17,7 +17,7 @@ import androidx.annotation.Nullable;
 
 import com.example.hulfix.R;
 import com.example.hulfix.core.Settings;
-import com.example.hulfix.overlay.LensEngine;
+import com.example.hulfix.core.SettingsRepository;
 import com.example.hulfix.overlay.StyleRegistry;
 import com.example.hulfix.overlay.StyleSpec;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
@@ -37,6 +37,9 @@ public class StyleFragment extends BaseSettingsFragment {
 
     private StylePreviewView mBigPreview;
     private LinearLayout mStyleList;
+    /** 「调整当前样式」面板容器（内容由 StyleAdjustPanel 重建）。 */
+    private LinearLayout mAdjustContainer;
+    private StyleAdjustPanel mAdjustPanel;
     private ActivityResultLauncher<Intent> mFilePicker;
 
     // 列表重建守卫：仅当"选中样式 id"或"自定义样式数量"变化时重建卡片列表，
@@ -83,13 +86,30 @@ public class StyleFragment extends BaseSettingsFragment {
         box.addView(mBigPreview, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        LinearLayout btnRow = new LinearLayout(requireContext());
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+
         com.google.android.material.button.MaterialButton playBtn =
                 new com.google.android.material.button.MaterialButton(requireContext());
         playBtn.setText("播放动画");
         playBtn.setIcon(androidx.core.content.ContextCompat.getDrawable(
                 requireContext(), com.example.hulfix.R.drawable.ic_play));
         playBtn.setOnClickListener(v -> mBigPreview.replay());
-        box.addView(playBtn, new LinearLayout.LayoutParams(
+        btnRow.addView(playBtn, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        com.google.android.material.button.MaterialButton demoBtn =
+                new com.google.android.material.button.MaterialButton(requireContext());
+        demoBtn.setText("触发示例悬浮窗");
+        demoBtn.setIcon(androidx.core.content.ContextCompat.getDrawable(
+                requireContext(), com.example.hulfix.R.drawable.ic_notification));
+        demoBtn.setOnClickListener(v -> sendDemoTrigger());
+        LinearLayout.LayoutParams demoLp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        demoLp.setMarginStart(SettingsViews.dp(requireContext(), 8));
+        btnRow.addView(demoBtn, demoLp);
+
+        box.addView(btnRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         previewCard.addView(box);
@@ -108,60 +128,25 @@ public class StyleFragment extends BaseSettingsFragment {
         SettingsViews.addNote(container,
                 "主题颜色只影响本 App 的设置界面观感，不影响悬浮窗样式。");
 
-        // ---- AGSL 真折射引擎 ----
-        SettingsViews.addSectionHeader(container, "真折射引擎（AGSL）");
-        if (!LensEngine.isSupported()) {
-            SettingsViews.addNote(container,
-                    "当前设备不支持 AGSL 真折射（需要 Android 13 / API 33 及以上）。"
-                            + "液态玻璃样式已自动使用兼容模拟效果（窗口模糊 + 双描边 + 高光），观感接近且零风险。");
-        } else {
-            SettingsViews.addSwitchItem(container, "启用真折射引擎",
-                    "液态玻璃启用物理折射：Snell 定律光线偏折 + RGB 色散 + 菲涅尔高光",
-                    prefBoolean("hulfix_lens_enabled", true),
-                    v -> {
-                        store.putBoolean("hulfix_lens_enabled", v);
-                        refreshPreview();
-                    });
-            SettingsViews.addSliderItem(container, "折射强度",
-                    0f, 48f, 1f, prefFloat("hulfix_lens_thickness", 14f), "px",
-                    v -> {
-                        store.putFloat("hulfix_lens_thickness", v);
-                        refreshPreview();
-                    });
-            SettingsViews.addSliderItem(container, "边缘透镜",
-                    0f, 1f, 0.05f, prefFloat("hulfix_lens_edge", 0.75f), "%",
-                    v -> {
-                        store.putFloat("hulfix_lens_edge", v);
-                        refreshPreview();
-                    });
-            SettingsViews.addSliderItem(container, "色散",
-                    0f, 1f, 0.05f, prefFloat("hulfix_lens_dispersion", 0.35f), "%",
-                    v -> {
-                        store.putFloat("hulfix_lens_dispersion", v);
-                        refreshPreview();
-                    });
-            SettingsViews.addSliderItem(container, "镜面高光",
-                    0f, 2f, 0.1f, prefFloat("hulfix_lens_specular", 1f), "",
-                    v -> {
-                        store.putFloat("hulfix_lens_specular", v);
-                        refreshPreview();
-                    });
-            SettingsViews.addSliderItem(container, "折射率 IOR",
-                    1.01f, 2f, 0.01f, prefFloat("hulfix_lens_ior", 1.5f), "",
-                    v -> {
-                        store.putFloat("hulfix_lens_ior", v);
-                        refreshPreview();
-                    });
-            SettingsViews.addNote(container,
-                    "仅对液态玻璃（liquid）类样式生效；修改即时反映在预览中，真实悬浮窗在下次通知时生效。"
-                            + "折射强度越大边缘拉伸越明显，色散控制边缘彩虹强度。");
-        }
+        // ---- AGSL 真折射引擎 + 动态光效引擎 ----
+        LensEngineSection.add(container, store, this::refreshPreview);
 
         // ---- 内置样式 ----
         SettingsViews.addSectionHeader(container, "内置样式");
+        SettingsViews.addEntryItem(container, "可视化编辑器",
+                "全屏实时预览，编辑当前样式的全部参数，支持导入导出调整补丁",
+                () -> startActivity(new Intent(requireContext(),
+                        StyleEditorActivity.class)));
         mStyleList = new LinearLayout(requireContext());
         mStyleList.setOrientation(LinearLayout.VERTICAL);
         container.addView(mStyleList);
+
+        // ---- 调整当前样式（点选哪个样式，面板就调整哪个） ----
+        mAdjustContainer = new LinearLayout(requireContext());
+        mAdjustContainer.setOrientation(LinearLayout.VERTICAL);
+        container.addView(mAdjustContainer);
+        mAdjustPanel = new StyleAdjustPanel(requireContext(), store, mAdjustContainer,
+                this::refreshPreview);
 
         // ---- 导入 ----
         SettingsViews.addSectionHeader(container, "自定义样式");
@@ -188,6 +173,8 @@ public class StyleFragment extends BaseSettingsFragment {
         if (!settings.styleId.equals(mRenderedStyleId)
                 || customCount != mRenderedCustomCount) {
             renderStyleList(settings);
+            // 调整面板跟随选中样式：点选哪个，面板就绑定哪个
+            if (mAdjustPanel != null) mAdjustPanel.bind(settings.styleId, settings);
             mRenderedStyleId = settings.styleId;
             mRenderedCustomCount = customCount;
         }
@@ -198,10 +185,31 @@ public class StyleFragment extends BaseSettingsFragment {
         refreshPreview(currentSettings());
     }
 
+    /**
+     * 广播触发一次示例悬浮窗。
+     *
+     * <p>由 App 自己"发消息"：SystemUI 内的控制器收到后直接渲染一次——
+     * 不走通知链路，不受冷却 / 去重 / 场景抑制限制，也不写台账 / 不计统计，
+     * 仅用于观察和调整悬浮窗效果。每次点击 exactly 一次渲染。</p>
+     */
+    private void sendDemoTrigger() {
+        try {
+            Intent intent = new Intent(SettingsRepository.ACTION_DEMO_OVERLAY);
+            intent.setPackage("com.android.systemui");
+            requireContext().sendBroadcast(intent);
+            // 冗余通道：不带包名的隐式广播（个别 ROM 显式广播被裁剪时兜底）
+            requireContext().sendBroadcast(
+                    new Intent(SettingsRepository.ACTION_DEMO_OVERLAY));
+            toast("已触发示例悬浮窗");
+        } catch (Throwable t) {
+            toast("触发失败：" + t.getMessage());
+        }
+    }
+
     /** 用最新设置重建大预览（滑块拖动时即时刷新，所见即所得）。 */
     private void refreshPreview(Settings settings) {
         if (mBigPreview == null) return;
-        StyleSpec current = StyleRegistry.byId(settings.styleId, settings.customStylesJson);
+        StyleSpec current = StyleRegistry.byId(settings.styleId, settings.customStylesJson, settings.styleOverridesJson);
         mBigPreview.setSettings(settings);
         mBigPreview.setStyle(current, isDarkNow());
     }
@@ -213,7 +221,10 @@ public class StyleFragment extends BaseSettingsFragment {
 
         for (StyleSpec spec : all) {
             boolean selected = spec.id.equals(settings.styleId);
-            mStyleList.addView(createStyleCard(spec, selected, settings));
+            // 迷你预览同样叠加该样式自己的调整补丁：卡片观感 = 微调后的最终观感
+            StyleSpec effective = StyleRegistry.byId(spec.id, settings.customStylesJson,
+                    settings.styleOverridesJson);
+            mStyleList.addView(createStyleCard(effective, selected, settings));
         }
     }
 

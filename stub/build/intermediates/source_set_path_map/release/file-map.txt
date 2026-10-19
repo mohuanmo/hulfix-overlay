@@ -1,0 +1,7 @@
+de.robv.android.xposed.stub-pngs-0 /workspace/hulfix-overlay/stub/build/generated/res/pngs/release
+de.robv.android.xposed.stub-resValues-1 /workspace/hulfix-overlay/stub/build/generated/res/resValues/release
+de.robv.android.xposed.stub-mergeReleaseResources-2 /workspace/hulfix-overlay/stub/build/intermediates/incremental/release/mergeReleaseResources/merged.dir
+de.robv.android.xposed.stub-mergeReleaseResources-3 /workspace/hulfix-overlay/stub/build/intermediates/incremental/release/mergeReleaseResources/stripped.dir
+de.robv.android.xposed.stub-merged_res-4 /workspace/hulfix-overlay/stub/build/intermediates/merged_res/release
+de.robv.android.xposed.stub-main-5 /workspace/hulfix-overlay/stub/src/main/res
+de.robv.android.xposed.stub-release-6 /workspace/hulfix-overlay/stub/src/release/res

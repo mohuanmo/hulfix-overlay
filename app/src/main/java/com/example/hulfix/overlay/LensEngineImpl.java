@@ -48,6 +48,39 @@ public final class LensEngineImpl {
             mShader.setFloatUniform(LensShader.U_IOR, u.ior);
             mShader.setFloatUniform(LensShader.U_HIGHLIGHT, u.highlightRgb());
             mShader.setFloatUniform(LensShader.U_PHASE, u.phase);
+            // 动态光效 uniform：实时渲染引擎逐帧刷新（无交互时保持常量，零额外开销）
+            mShader.setFloatUniform(LensShader.U_LIGHT_DIR, u.lightX, u.lightY);
+            mShader.setFloatUniform(LensShader.U_AMBIENT, u.ambient);
+            mShader.setFloatUniform(LensShader.U_SHADOW, u.shadow);
+            mShader.setFloatUniform(LensShader.U_FLOW, u.flowPhase);
+        } catch (Throwable t) {
+            mBroken = true;
+        }
+    }
+
+    /**
+     * 逐帧热路径：只推送 4 个动态 uniform（光源/环境光/阴影/流动相位）。
+     *
+     * <p>静态外观参数（尺寸、折射率、色散等）不随帧变化，无需重复推送——
+     * 每帧全量 bind 15 个 uniform 在低端 GPU 上也是可省的开销。</p>
+     */
+    public void bindDynamic(LensUniforms u) {
+        if (mBroken || u == null) return;
+        bindDynamicRaw(u.lightX, u.lightY, u.ambient, u.shadow, u.flowPhase);
+    }
+
+    /**
+     * 逐帧热路径的零分配形态：直接收原始 float（帧循环内部使用，
+     * 避免每帧 new 一个 {@link LensUniforms} 造成 GC 抖动）。
+     */
+    public void bindDynamicRaw(float lightX, float lightY, float ambient,
+                               float shadow, float flowPhase) {
+        if (mBroken) return;
+        try {
+            mShader.setFloatUniform(LensShader.U_LIGHT_DIR, lightX, lightY);
+            mShader.setFloatUniform(LensShader.U_AMBIENT, ambient);
+            mShader.setFloatUniform(LensShader.U_SHADOW, shadow);
+            mShader.setFloatUniform(LensShader.U_FLOW, flowPhase);
         } catch (Throwable t) {
             mBroken = true;
         }

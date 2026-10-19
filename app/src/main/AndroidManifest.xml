@@ -23,6 +23,13 @@
             android:name="xposedminversion"
             android:value="93" />
 
+        <!-- 可视化编辑器（全屏实时预览编辑样式与引擎参数） -->
+        <activity
+            android:name=".ui.StyleEditorActivity"
+            android:exported="false"
+            android:label="可视化编辑器"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode" />
+
         <!-- 设置界面（启动器入口） -->
         <activity
             android:name=".ui.SettingsActivity"

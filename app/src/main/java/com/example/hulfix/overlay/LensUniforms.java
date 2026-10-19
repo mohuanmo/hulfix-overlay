@@ -23,6 +23,20 @@ public final class LensUniforms {
     public static final float MAX_EDGE_WIDTH_PX = 256f;
     public static final float TWO_PI = (float) (Math.PI * 2.0);
 
+    // ==================== 动态光效合法范围（实时渲染：每帧重算的 uniform） ====================
+
+    public static final float MAX_LIGHT_DIR = 1f;       // 光源方向分量 -1..1
+    public static final float MAX_AMBIENT = 1f;         // 环境光强度 0..1
+    public static final float MAX_SHADOW = 1f;          // 自适应阴影强度 0..1
+
+    // ---------- 动态光效的静态设计值（dynamic off / strength=0 时的观感） ----------
+    // 与下方 9 参 create() 委托的私有构造默认值保持一致：单一事实源。
+    public static final float DEFAULT_LIGHT_X = 0.35f;  // 光源左上
+    public static final float DEFAULT_LIGHT_Y = -0.6f;
+    public static final float DEFAULT_AMBIENT = 0.5f;   // 中等环境光
+    public static final float DEFAULT_SHADOW = 0.3f;    // 轻微接触阴影
+    public static final float DEFAULT_FLOW_PHASE = 0f;
+
     public final float radiusPx;
     public final float edgeWidthPx;
     public final float thicknessPx;
@@ -33,9 +47,31 @@ public final class LensUniforms {
     public final float phase;
     private final int mHighlightArgb;
 
+    // ---------- 动态光效（实时渲染引擎逐帧驱动） ----------
+    /** 光源方向 X 分量（-1 左 ← 0 中 → +1 右）。 */
+    public final float lightX;
+    /** 光源方向 Y 分量（-1 上 ← 0 中 → +1 下，屏幕坐标 y 向下）。 */
+    public final float lightY;
+    /** 环境光强度 0..1：整体明度基准，驱动自适应阴影与高光衰减。 */
+    public final float ambient;
+    /** 自适应阴影强度 0..1：背离光源侧的接触阴影。 */
+    public final float shadow;
+    /** 流动相位（0..2π）：光泽带随时间流动，由帧回调持续推进。 */
+    public final float flowPhase;
+
     private LensUniforms(float radiusPx, float edgeWidthPx, float thicknessPx, float edgeBoost,
                          float dispersion, float specular, float ior, int highlightArgb,
                          float phase) {
+        this(radiusPx, edgeWidthPx, thicknessPx, edgeBoost, dispersion, specular, ior,
+                highlightArgb, phase,
+                DEFAULT_LIGHT_X, DEFAULT_LIGHT_Y, DEFAULT_AMBIENT, DEFAULT_SHADOW,
+                DEFAULT_FLOW_PHASE);
+    }
+
+    private LensUniforms(float radiusPx, float edgeWidthPx, float thicknessPx, float edgeBoost,
+                         float dispersion, float specular, float ior, int highlightArgb,
+                         float phase, float lightX, float lightY, float ambient,
+                         float shadow, float flowPhase) {
         this.radiusPx = radiusPx;
         this.edgeWidthPx = edgeWidthPx;
         this.thicknessPx = thicknessPx;
@@ -45,6 +81,11 @@ public final class LensUniforms {
         this.ior = ior;
         this.mHighlightArgb = highlightArgb;
         this.phase = phase;
+        this.lightX = lightX;
+        this.lightY = lightY;
+        this.ambient = ambient;
+        this.shadow = shadow;
+        this.flowPhase = flowPhase;
     }
 
     /**
@@ -64,6 +105,44 @@ public final class LensUniforms {
                 clamp(ior, MIN_IOR, MAX_IOR),
                 highlightArgb,
                 clamp(phase, 0f, TWO_PI));
+    }
+
+    /**
+     * 带动态光效参数的构造（实时渲染引擎用）。
+     *
+     * <p>静态字段与 {@link #create} 一致；动态字段同样全部钳制。光源方向分量 NaN 回落 0。</p>
+     */
+    public static LensUniforms createDynamic(float radiusPx, float edgeWidthPx,
+                                             float thicknessPx, float edgeBoost,
+                                             float dispersion, float specular, float ior,
+                                             int highlightArgb, float phase,
+                                             float lightX, float lightY, float ambient,
+                                             float shadow, float flowPhase) {
+        return new LensUniforms(
+                clamp(radiusPx, 0f, MAX_RADIUS_PX),
+                clamp(edgeWidthPx, 1f, MAX_EDGE_WIDTH_PX),
+                clamp(thicknessPx, 0f, MAX_THICKNESS_PX),
+                clamp(edgeBoost, 0f, MAX_EDGE_BOOST),
+                clamp(dispersion, 0f, MAX_DISPERSION),
+                clamp(specular, 0f, MAX_SPECULAR),
+                clamp(ior, MIN_IOR, MAX_IOR),
+                highlightArgb,
+                clamp(phase, 0f, TWO_PI),
+                clampDir(lightX),
+                clampDir(lightY),
+                clamp(ambient, 0f, MAX_AMBIENT),
+                clamp(shadow, 0f, MAX_SHADOW),
+                clamp(flowPhase, 0f, TWO_PI));
+    }
+
+    /**
+     * 基于当前值改动态字段的副本（逐帧驱动：只重算动态 uniform，不动静态外观）。
+     */
+    public LensUniforms withDynamic(float lightX, float lightY, float ambient,
+                                    float shadow, float flowPhase) {
+        return createDynamic(radiusPx, edgeWidthPx, thicknessPx, edgeBoost, dispersion,
+                specular, ior, mHighlightArgb, phase, lightX, lightY, ambient,
+                shadow, flowPhase);
     }
 
     /** 高光色 RGB 三个分量（0..1 float[3]，对应 uniform float3 uHighlight）。 */
@@ -92,6 +171,11 @@ public final class LensUniforms {
                 && Float.compare(that.specular, specular) == 0
                 && Float.compare(that.ior, ior) == 0
                 && Float.compare(that.phase, phase) == 0
+                && Float.compare(that.lightX, lightX) == 0
+                && Float.compare(that.lightY, lightY) == 0
+                && Float.compare(that.ambient, ambient) == 0
+                && Float.compare(that.shadow, shadow) == 0
+                && Float.compare(that.flowPhase, flowPhase) == 0
                 && mHighlightArgb == that.mHighlightArgb;
     }
 
@@ -105,6 +189,11 @@ public final class LensUniforms {
         result = 31 * result + Float.floatToIntBits(specular);
         result = 31 * result + Float.floatToIntBits(ior);
         result = 31 * result + Float.floatToIntBits(phase);
+        result = 31 * result + Float.floatToIntBits(lightX);
+        result = 31 * result + Float.floatToIntBits(lightY);
+        result = 31 * result + Float.floatToIntBits(ambient);
+        result = 31 * result + Float.floatToIntBits(shadow);
+        result = 31 * result + Float.floatToIntBits(flowPhase);
         result = 31 * result + mHighlightArgb;
         return result;
     }
@@ -114,7 +203,9 @@ public final class LensUniforms {
         return "LensUniforms{r=" + radiusPx + " edge=" + edgeWidthPx
                 + " thick=" + thicknessPx + " boost=" + edgeBoost
                 + " disp=" + dispersion + " spec=" + specular + " ior=" + ior
-                + " hl=#" + Integer.toHexString(mHighlightArgb) + "}";
+                + " hl=#" + Integer.toHexString(mHighlightArgb)
+                + " light=(" + lightX + "," + lightY + ") amb=" + ambient
+                + " shd=" + shadow + " flow=" + flowPhase + "}";
     }
 
     /** NaN → lo；其余 clamp 到 [lo, hi]。 */
@@ -122,6 +213,17 @@ public final class LensUniforms {
         if (Float.isNaN(v)) return lo;
         if (v < lo) return lo;
         if (v > hi) return hi;
+        return v;
+    }
+
+    /**
+     * 光源方向分量钳制：NaN → 0（回正，而不是漂到某一侧——方向字段的
+     * "中性"语义是屏幕中央），其余 clamp 到 [-1, 1]。
+     */
+    static float clampDir(float v) {
+        if (Float.isNaN(v)) return 0f;
+        if (v < -MAX_LIGHT_DIR) return -MAX_LIGHT_DIR;
+        if (v > MAX_LIGHT_DIR) return MAX_LIGHT_DIR;
         return v;
     }
 }

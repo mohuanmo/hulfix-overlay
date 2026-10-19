@@ -62,7 +62,9 @@ public class LensShaderTest {
                 LensShader.U_RESOLUTION, LensShader.U_RADIUS_PX, LensShader.U_EDGE_WIDTH_PX,
                 LensShader.U_THICKNESS, LensShader.U_EDGE_BOOST, LensShader.U_DISPERSION,
                 LensShader.U_SPECULAR, LensShader.U_IOR, LensShader.U_HIGHLIGHT,
-                LensShader.U_PHASE, LensShader.U_BACKDROP
+                LensShader.U_PHASE, LensShader.U_BACKDROP,
+                LensShader.U_LIGHT_DIR, LensShader.U_AMBIENT, LensShader.U_SHADOW,
+                LensShader.U_FLOW
         };
         for (String n : names) {
             assertTrue("uniform not declared: " + n,
@@ -73,6 +75,17 @@ public class LensShaderTest {
             // 除注入的 shader uniform 外，Java 侧必须真的 set 这些 uniform
             assertTrue("uniform never read in shader body: " + n, SRC.contains(n));
         }
+    }
+
+    @Test
+    public void dynamicLightingConstructsPresent() {
+        // 方向性镜面高光：半角向量 H = normalize(L + V)
+        assertTrue("half vector missing", SRC.contains("normalize(lightDir + float3(0.0, 0.0, 1.0))"));
+        assertTrue("directional specular missing", SRC.contains("max(dot(n, halfV), 0.0)"));
+        // 自适应接触阴影：背离光源侧衰减 + 边缘加权
+        assertTrue("adaptive shadow missing", SRC.contains("1.0 - " + LensShader.U_SHADOW + " * (1.0 - facing)"));
+        // 流动光泽：相位驱动的对角光带
+        assertTrue("flow sheen missing", SRC.contains("sin(" + LensShader.U_FLOW + " + centered.x"));
     }
 
     @Test

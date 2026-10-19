@@ -123,6 +123,9 @@ public class StylePreviewView extends FrameLayout implements AnimPresets.Host {
             mBuild.lensUniforms = OverlayRenderer.lensUniformsFor(getContext(), mSpec, mSettings,
                     mBuild.cornerRadiusPx, mBuild.lensUniforms.highlightArgb());
             mBuild.lensView.setLensUniforms(mBuild.lensUniforms);
+            // 动态光效配置同样热更新（开关 / 强度 / 阴影 / 强调色跟随）
+            mBuild.lensView.setDynamicConfig(mSettings.lensDynamic, mSettings.lensDynamicStrength,
+                    mSettings.lensAdaptiveShadow, mSettings.lensAccentFollow);
         } catch (Throwable ignored) {
         }
     }
@@ -135,6 +138,10 @@ public class StylePreviewView extends FrameLayout implements AnimPresets.Host {
     public void playEnter() {
         if (mBuild == null) return;
         mBuild.root.setAlpha(0f);
+        // 动态光效：预览也走真实入场（环境光渐亮 + 弹出脉冲），所见即所得
+        if (mBuild.lensView != null) {
+            mBuild.lensView.beginEntrance(Math.max(160, mSettings.enterDurationMs));
+        }
         AnimPresets.playEnter(this, mSpec, mSettings, mPlayer, null);
     }
 

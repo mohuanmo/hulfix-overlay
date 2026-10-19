@@ -168,7 +168,7 @@ public final class OverlayController implements GestureHandler.Callback {
                     removeOverlaySync();
                     return;
                 }
-                StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson);
+                StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson, s.styleOverridesJson);
                 boolean positionChanged = s.anchor != mAppliedAnchor
                         || s.offsetXDp != mAppliedOffsetX || s.offsetYDp != mAppliedOffsetY;
                 if (!poolKeyFor(s, spec, isDark(s)).equals(mPooledKey)) {
@@ -186,6 +186,19 @@ public final class OverlayController implements GestureHandler.Callback {
                     mAppliedAnchor = s.anchor;
                     mAppliedOffsetX = s.offsetXDp;
                     mAppliedOffsetY = s.offsetYDp;
+                }
+                // 折射 / 动态光效滑块：不影响视图池键，直接热更新正在显示的卡片
+                // （否则"改强度不生效"要等下一次通知，与位置热更新体验不一致）
+                if (mPooledBuild != null && mPooledBuild.lensView != null
+                        && mPooledBuild.lensUniforms != null) {
+                    try {
+                        mPooledBuild.lensUniforms = OverlayRenderer.lensUniformsFor(
+                                mContext, spec, s, mPooledBuild.cornerRadiusPx,
+                                mPooledBuild.lensUniforms.highlightArgb());
+                        mPooledBuild.lensView.setLensUniforms(mPooledBuild.lensUniforms);
+                        refreshLensDynamic(mPooledBuild, s);
+                    } catch (Throwable ignored) {
+                    }
                 }
             } catch (Throwable t) {
                 logAlways("settings-reload error: " + t);
@@ -288,7 +301,7 @@ public final class OverlayController implements GestureHandler.Callback {
                 }
 
                 boolean dark = isDark(s);
-                StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson);
+                StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson, s.styleOverridesJson);
 
                 // 内容提取
                 NotificationContent nc = extractContent(sbn, notification.extras);
@@ -329,6 +342,11 @@ public final class OverlayController implements GestureHandler.Callback {
                 GestureHandler gh = new GestureHandler(s, OverlayController.this);
                 touchTarget.setOnTouchListener(gh);
 
+                // 动态光效引擎：卡片飞入即开始实时渲染（环境光渐亮 + 一次弹出脉冲）
+                if (build.lensView != null) {
+                    build.lensView.beginEntrance(Math.max(160, s.enterDurationMs));
+                }
+
                 // 事件回报（静默重绘不计入统计，也不重复上报"展示"）
                 if (!restyle) {
                     mEngine.onShown(s, info);
@@ -362,6 +380,99 @@ public final class OverlayController implements GestureHandler.Callback {
                 log("show error: " + t);
             }
         });
+    }
+
+    /**
+     * 示例悬浮窗：由 App 主动触发的一次渲染（设置页「触发示例悬浮窗」按钮）。
+     *
+     * <p><b>与真实通知的区别</b>：不走通知链路——没有 StatusBarNotification、
+     * 没有冷却 / 去重 / 场景检测 / 生命周期锁。它只是"直接渲染一次"，
+     * 用来观察和调整悬浮窗效果（配合动态光效观察高光 / 阴影 / 流动光泽的实时演算）。</p>
+     *
+     * <p><b>不影响其他逻辑</b>：不写消息台账、不计统计、不动冷却状态、不发事件广播；
+     * 每次触发先同步摘除在途窗口再重建，因此连点多次也只是逐次替换，
+     * 不会叠加多个窗口。模块总开关关闭时不渲染（避免误以为模块失效）。</p>
+     */
+    public void showDemo() {
+        mHandler.post(() -> {
+            try {
+                if (mContext == null || mWindowManager == null) return;
+                Settings s = mSettingsRepo.get();
+                if (s == null || !s.enabled) {
+                    logAlways("demo overlay skipped: module disabled");
+                    return;
+                }
+                boolean dark = isDark(s);
+                StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson,
+                        s.styleOverridesJson);
+
+                // 先摘除在途窗口（同步：晚于 addView 执行会误删新窗口）
+                removeOverlaySync();
+
+                OverlayRenderer.Build build = obtainBuild(s, spec, dark);
+                rebindBuild(build, spec, "HULFix", "这是一条示例消息",
+                        "由 App 主动触发的一次渲染，用于观察和调整悬浮窗效果。",
+                        demoIcon(), 0, s);
+                if (!s.staggerContent) {
+                    setChildrenAlpha(build, 1f);
+                }
+
+                WindowManager.LayoutParams params =
+                        buildLayoutParams(s, spec, build, WINDOW_TYPE);
+                build.root.setAlpha(0f);
+                if (!addViewWithFallback(s, spec, build, params)) {
+                    return;
+                }
+                applyWindowBlur(build, spec, s);
+
+                mOverlay = build.root;
+                mCurrentKey = DEMO_KEY;
+                mCurrentContentHash = "demo";
+                mCurrentContentIntent = null;
+                mCurrentSbn = null;
+                mAppliedAnchor = s.anchor;
+                mAppliedOffsetX = s.offsetXDp;
+                mAppliedOffsetY = s.offsetYDp;
+                mState = State.ENTERING;
+
+                // 手势接线（示例卡片同样可滑动 / 点击，行为与真实通知一致）
+                View touchTarget = build.contentLayer != null ? build.contentLayer : build.root;
+                touchTarget.setOnTouchListener(new GestureHandler(s, OverlayController.this));
+
+                // 动态光效：入场渐亮 + 一次弹出脉冲（与真实通知同一条链路）
+                if (build.lensView != null) {
+                    build.lensView.beginEntrance(Math.max(160, s.enterDurationMs));
+                    build.lensView.pulseSceneEnergy(1f);
+                }
+
+                mShowStartElapsed = SystemClock.elapsedRealtime();
+                mAutoDismissMs = s.autoDismissMs;
+                mPlayer.cancelAll();
+                AnimPresets.Host host = hostOf(build);
+                AnimPresets.playEnter(host, spec, s, mPlayer,
+                        () -> {
+                            if (mState == State.ENTERING) mState = State.SHOWING;
+                        });
+                startRingProgress(build, s, spec);
+                scheduleAutoDismiss(s);
+                logAlways("demo overlay shown (style=" + spec.id + ")");
+            } catch (Throwable t) {
+                log("demo error: " + t);
+            }
+        });
+    }
+
+    /** 示例消息的伪 key（与真实通知 key 空间隔离）。 */
+    public static final String DEMO_KEY = "hulfix_demo";
+
+    /** 示例卡片图标：本模块 App 自身的通知图标（SystemUI 进程按包名加载资源）。 */
+    private android.graphics.drawable.Icon demoIcon() {
+        try {
+            return android.graphics.drawable.Icon.createWithResource(
+                    SettingsRepository.PKG, com.example.hulfix.R.drawable.ic_notification);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     // ==================== 视图池 ====================
@@ -493,6 +604,18 @@ public final class OverlayController implements GestureHandler.Callback {
                         b.cornerRadiusPx, b.lensUniforms.highlightArgb());
                 b.lensView.setLensUniforms(b.lensUniforms);
             }
+            // 动态光效配置同样可能被修改：推送最新开关 / 强度 / 阴影 / 强调色跟随
+            refreshLensDynamic(b, s);
+        }
+    }
+
+    /** 把动态光效设置推送到玻璃背景层（开关 / 强度 / 自适应阴影 / 强调色跟随）。 */
+    private void refreshLensDynamic(OverlayRenderer.Build b, Settings s) {
+        if (b == null || b.lensView == null) return;
+        try {
+            b.lensView.setDynamicConfig(s.lensDynamic, s.lensDynamicStrength,
+                    s.lensAdaptiveShadow, s.lensAccentFollow);
+        } catch (Throwable ignored) {
         }
     }
 
@@ -789,7 +912,7 @@ public final class OverlayController implements GestureHandler.Callback {
             }
             mState = State.EXITING;
             Settings s = mSettingsRepo.get();
-            StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson);
+            StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson, s.styleOverridesJson);
             // 退场开始即摘除有界背景模糊（见 detachWindowBlur 注释）：
             // 模糊区域由 SurfaceFlinger/Aggregator 合成，不随卡片 alpha 动画淡出，
             // 若等动画结束才 removeView，卡片飞出后霜面矩形还会停留一整个退场时长。
@@ -1027,6 +1150,11 @@ public final class OverlayController implements GestureHandler.Callback {
             mOverlay.setTranslationX(dx);
             mOverlay.setTranslationY(dy);
         }
+        // 拖动能量注入动态光效：光泽带加速流动
+        if (mPooledBuild != null && mPooledBuild.lensView != null) {
+            float energy = Math.min(1f, (Math.abs(dx) + Math.abs(dy)) / 240f);
+            if (energy > 0.02f) mPooledBuild.lensView.addSwipeEnergy(energy * 0.35f);
+        }
     }
 
     @Override
@@ -1039,7 +1167,7 @@ public final class OverlayController implements GestureHandler.Callback {
         if (mOverlay == null) return;
         mState = State.SHOWING;
         Settings s = mSettingsRepo.get();
-        StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson);
+        StyleSpec spec = StyleRegistry.byId(s.styleId, s.customStylesJson, s.styleOverridesJson);
         AnimPresets.playBounce(hostOf(mPooledBuild), s, mPlayer, null);
     }
 
@@ -1048,6 +1176,18 @@ public final class OverlayController implements GestureHandler.Callback {
         if (mOverlay == null) return;
         if (down) AnimPresets.pressDown(mOverlay);
         else AnimPresets.pressUp(mOverlay);
+        // 按压同时是光效输入：玻璃被"点亮"
+        if (mPooledBuild != null && mPooledBuild.lensView != null) {
+            mPooledBuild.lensView.setPressProgress(down ? 1f : 0f);
+        }
+    }
+
+    @Override
+    public void onLightTouch(float nx, float ny, boolean down) {
+        // 手指即光源：高光跟随触点，抬手后平滑游弋回默认方向
+        if (mPooledBuild != null && mPooledBuild.lensView != null) {
+            mPooledBuild.lensView.setTouchLight(nx, ny, down);
+        }
     }
 
     // ==================== 工具 ====================

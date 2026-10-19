@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 
+import com.example.hulfix.core.PluginManager;
 import com.example.hulfix.core.Settings;
 import com.example.hulfix.core.SettingsRepository;
 import com.example.hulfix.overlay.OverlayController;
@@ -327,6 +328,90 @@ public final class SettingsStore {
             }
         }
         apply(mPrefs.edit().putString("hulfix_custom_styles", arr.toString()));
+    }
+
+    // ==================== 插件 ====================
+
+    public List<PluginManager.Plugin> plugins() {
+        return PluginManager.parsePlugins(mPrefs.getString(PluginManager.KEY_PLUGINS, "[]"));
+    }
+
+    private void savePlugins(List<PluginManager.Plugin> list) {
+        apply(mPrefs.edit().putString(PluginManager.KEY_PLUGINS,
+                PluginManager.serializePlugins(list)));
+    }
+
+    /**
+     * 安装插件：记录落盘 + 样式镜像进 customStyles（悬浮窗只认后者）。
+     *
+     * <p>镜像同步在每次插件结构变化后重算：customStyles = 纯导入样式 + 全部
+     * <b>启用</b>插件的样式。停用即从镜像消失、记录保留，可随时再启用。</p>
+     */
+    public void installPlugin(PluginManager.Plugin p) {
+        List<PluginManager.Plugin> list = plugins();
+        list.removeIf(x -> p.id.equals(x.id));
+        list.add(0, p);
+        savePlugins(list);
+        syncCustomStylesMirror();
+    }
+
+    public void setPluginEnabled(String id, boolean enabled) {
+        List<PluginManager.Plugin> list = plugins();
+        boolean changed = false;
+        for (PluginManager.Plugin p : list) {
+            if (id.equals(p.id) && p.enabled != enabled) {
+                p.enabled = enabled;
+                changed = true;
+            }
+        }
+        if (changed) {
+            savePlugins(list);
+            syncCustomStylesMirror();
+        }
+    }
+
+    public void removePlugin(String id) {
+        List<PluginManager.Plugin> list = plugins();
+        boolean changed = list.removeIf(p -> id.equals(p.id));
+        if (changed) {
+            savePlugins(list);
+            syncCustomStylesMirror();
+        }
+    }
+
+    /** 重算 customStyles 镜像（导入样式 + 启用插件样式）。 */
+    private void syncCustomStylesMirror() {
+        List<StyleSpec> merged = new ArrayList<>();
+        for (StyleSpec s : customStyles()) {
+            // 只保留纯导入样式（非插件镜像）
+            if (PluginManager.pluginIdOfStyleId(s.id) == null) merged.add(s);
+        }
+        for (PluginManager.Plugin p : plugins()) {
+            if (p.enabled) merged.addAll(p.styles);
+        }
+        saveCustomStyles(merged);
+    }
+
+    /** 应用插件携带的引擎预设（只写白名单内的 hulfix_lens_* 键）。 */
+    public void applyEnginePreset(PluginManager.EnginePreset preset) {
+        if (preset == null || preset.params == null) return;
+        SharedPreferences.Editor e = mPrefs.edit();
+        try {
+            java.util.Iterator<String> it = preset.params.keys();
+            while (it.hasNext()) {
+                String key = it.next();
+                if (!PluginManager.isEngineParamKey(key)) continue;
+                Object v = preset.params.get(key);
+                if (v instanceof Boolean) {
+                    e.putBoolean(key, (Boolean) v);
+                } else if (v instanceof Number) {
+                    // 引擎参数在 prefs 中全部为 float 语义
+                    e.putFloat(key, ((Number) v).floatValue());
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        apply(e);
     }
 
     // ==================== 手动暂停 ====================

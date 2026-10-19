@@ -187,8 +187,14 @@ public final class OverlayRenderer {
         b.bgColorsRaw = pal.bgColors;
         if (windowBlur) bgScale *= BLUR_BG_DISCOUNT;
 
-        int accent = spec.accentMode == StyleSpec.ACCENT_DYNAMIC && accentOverride != 0
-                ? accentOverride : pal.accent;
+        int accent = pal.accent;
+        if (spec.accentMode == StyleSpec.ACCENT_SYSTEM) {
+            // 跟随系统强调色（Material You 动态取色）：解析失败保持调色板原色
+            int sys = AccentColors.systemAccent(ctx);
+            if (sys != 0) accent = sys;
+        } else if (spec.accentMode == StyleSpec.ACCENT_DYNAMIC && accentOverride != 0) {
+            accent = accentOverride;
+        }
 
         // ---------- 尺寸 ----------
         int widthPx = (int) (Math.min(sw * 0.40f, 340f * density) * clamp(settings.widthScale, 0.4f, 1.6f));
@@ -228,6 +234,9 @@ public final class OverlayRenderer {
             lens.setAccentColor(accent);
             LensUniforms lensU = lensUniformsFor(ctx, spec, settings, cornerPx, pal.highlightColor);
             lens.setLensUniforms(lensU);
+            // 动态光效配置（实时渲染引擎的开关 / 强度 / 阴影 / 强调色跟随）
+            lens.setDynamicConfig(settings.lensDynamic, settings.lensDynamicStrength,
+                    settings.lensAdaptiveShadow, settings.lensAccentFollow);
             root.addView(lens);
             b.bgLayer = lens;
             b.lensView = lens;

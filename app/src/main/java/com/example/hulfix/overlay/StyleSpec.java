@@ -26,6 +26,7 @@ public final class StyleSpec {
 
     public static final int ACCENT_FIXED = 0;
     public static final int ACCENT_DYNAMIC = 1; // 从通知图标取色
+    public static final int ACCENT_SYSTEM = 2;  // 跟随系统强调色（Material You 动态取色）
 
     public String id = "custom";
     public String name = "自定义样式";
@@ -99,52 +100,123 @@ public final class StyleSpec {
     }
 
     public static StyleSpec fromJson(JSONObject o) throws JSONException {
-        StyleSpec s = new StyleSpec();
-        s.id = o.optString("id", s.id);
-        s.name = o.optString("name", s.name);
-        s.author = o.optString("author", s.author);
-        s.version = o.optInt("version", 1);
-        s.variant = normalizeVariant(o.optString("variant", s.variant));
-        s.builtin = o.optBoolean("builtin", false);
-
-        JSONObject d = o.optJSONObject("dark");
-        if (d != null) s.dark = paletteFromJson(d, s.dark);
-        JSONObject l = o.optJSONObject("light");
-        if (l != null) s.light = paletteFromJson(l, s.light);
-
-        s.cornerRadiusDp = (float) o.optDouble("cornerRadiusDp", s.cornerRadiusDp);
-        s.strokeWidthDp = (float) o.optDouble("strokeWidthDp", s.strokeWidthDp);
-        s.blurRadiusDp = (float) o.optDouble("blurRadiusDp", s.blurRadiusDp);
-        s.scrimColor = parseColor(o.optString("scrimColor", null), s.scrimColor);
-        s.paddingHDp = (float) o.optDouble("paddingHDp", s.paddingHDp);
-        s.paddingVDp = (float) o.optDouble("paddingVDp", s.paddingVDp);
-        s.iconSizeDp = (float) o.optDouble("iconSizeDp", s.iconSizeDp);
-        s.iconPaddingDp = (float) o.optDouble("iconPaddingDp", s.iconPaddingDp);
-        s.titleSizeSp = (float) o.optDouble("titleSizeSp", s.titleSizeSp);
-        s.textSizeSp = (float) o.optDouble("textSizeSp", s.textSizeSp);
-        s.appNameSizeSp = (float) o.optDouble("appNameSizeSp", s.appNameSizeSp);
-        s.elevationDp = (float) o.optDouble("elevationDp", s.elevationDp);
-        s.minHeightDp = (float) o.optDouble("minHeightDp", s.minHeightDp);
-
-        s.showIcon = o.optBoolean("showIcon", s.showIcon);
-        s.showAppName = o.optBoolean("showAppName", s.showAppName);
-        s.iconCircleBg = o.optBoolean("iconCircleBg", s.iconCircleBg);
-        s.progressRing = o.optBoolean("progressRing", s.progressRing);
-        s.pulseDot = o.optBoolean("pulseDot", s.pulseDot);
-        s.topHighlight = o.optBoolean("topHighlight", s.topHighlight);
-        s.bottomShadow = o.optBoolean("bottomShadow", s.bottomShadow);
-        s.doubleStroke = o.optBoolean("doubleStroke", s.doubleStroke);
-        s.maxTextLines = o.optInt("maxTextLines", s.maxTextLines);
-        s.accentMode = o.optInt("accentMode", s.accentMode);
-
-        s.enterAnim = o.optInt("enterAnim", s.enterAnim);
-        s.exitAnim = o.optInt("exitAnim", s.exitAnim);
-        s.enterDurationMs = o.optInt("enterDurationMs", s.enterDurationMs);
-        s.exitDurationMs = o.optInt("exitDurationMs", s.exitDurationMs);
-        s.enterOvershoot = (float) o.optDouble("enterOvershoot", s.enterOvershoot);
-
+        StyleSpec s = new StyleSpec().applyJson(o);
         clamp(s);
         return s;
+    }
+
+    /**
+     * 把 JSON 中的<b>已出现</b>字段合并到当前实例（局部覆盖语义）。
+     *
+     * <p>与 {@link #fromJson} 的区别：fromJson 用全新默认值解析完整定义（导入用）；
+     * 本方法用于"模板 + 调整层"——只改调用方在 JSON 里写了的键，其余保持模板原值。
+     * 内置样式因此可以在不改动共享常量的前提下被逐样式微调。</p>
+     */
+    public StyleSpec applyJson(JSONObject o) throws JSONException {
+        id = o.optString("id", id);
+        name = o.optString("name", name);
+        author = o.optString("author", author);
+        version = o.optInt("version", version);
+        variant = normalizeVariant(o.optString("variant", variant));
+        builtin = o.optBoolean("builtin", builtin);
+
+        JSONObject d = o.optJSONObject("dark");
+        if (d != null) dark = paletteFromJson(d, dark);
+        JSONObject l = o.optJSONObject("light");
+        if (l != null) light = paletteFromJson(l, light);
+
+        cornerRadiusDp = (float) o.optDouble("cornerRadiusDp", cornerRadiusDp);
+        strokeWidthDp = (float) o.optDouble("strokeWidthDp", strokeWidthDp);
+        blurRadiusDp = (float) o.optDouble("blurRadiusDp", blurRadiusDp);
+        scrimColor = parseColor(o.optString("scrimColor", null), scrimColor);
+        paddingHDp = (float) o.optDouble("paddingHDp", paddingHDp);
+        paddingVDp = (float) o.optDouble("paddingVDp", paddingVDp);
+        iconSizeDp = (float) o.optDouble("iconSizeDp", iconSizeDp);
+        iconPaddingDp = (float) o.optDouble("iconPaddingDp", iconPaddingDp);
+        titleSizeSp = (float) o.optDouble("titleSizeSp", titleSizeSp);
+        textSizeSp = (float) o.optDouble("textSizeSp", textSizeSp);
+        appNameSizeSp = (float) o.optDouble("appNameSizeSp", appNameSizeSp);
+        elevationDp = (float) o.optDouble("elevationDp", elevationDp);
+        minHeightDp = (float) o.optDouble("minHeightDp", minHeightDp);
+
+        showIcon = o.optBoolean("showIcon", showIcon);
+        showAppName = o.optBoolean("showAppName", showAppName);
+        iconCircleBg = o.optBoolean("iconCircleBg", iconCircleBg);
+        progressRing = o.optBoolean("progressRing", progressRing);
+        pulseDot = o.optBoolean("pulseDot", pulseDot);
+        topHighlight = o.optBoolean("topHighlight", topHighlight);
+        bottomShadow = o.optBoolean("bottomShadow", bottomShadow);
+        doubleStroke = o.optBoolean("doubleStroke", doubleStroke);
+        maxTextLines = o.optInt("maxTextLines", maxTextLines);
+        accentMode = o.optInt("accentMode", accentMode);
+
+        enterAnim = o.optInt("enterAnim", enterAnim);
+        exitAnim = o.optInt("exitAnim", exitAnim);
+        enterDurationMs = o.optInt("enterDurationMs", enterDurationMs);
+        exitDurationMs = o.optInt("exitDurationMs", exitDurationMs);
+        enterOvershoot = (float) o.optDouble("enterOvershoot", enterOvershoot);
+
+        return this;
+    }
+
+    /** 深拷贝（内置样式是共享常量，微调前必须复制，避免污染模板）。 */
+    public StyleSpec copy() {
+        StyleSpec s = new StyleSpec();
+        s.id = id;
+        s.name = name;
+        s.author = author;
+        s.version = version;
+        s.variant = variant;
+        s.builtin = builtin;
+        s.cornerRadiusDp = cornerRadiusDp;
+        s.strokeWidthDp = strokeWidthDp;
+        s.blurRadiusDp = blurRadiusDp;
+        s.scrimColor = scrimColor;
+        s.paddingHDp = paddingHDp;
+        s.paddingVDp = paddingVDp;
+        s.iconSizeDp = iconSizeDp;
+        s.iconPaddingDp = iconPaddingDp;
+        s.titleSizeSp = titleSizeSp;
+        s.textSizeSp = textSizeSp;
+        s.appNameSizeSp = appNameSizeSp;
+        s.elevationDp = elevationDp;
+        s.minHeightDp = minHeightDp;
+        s.showIcon = showIcon;
+        s.showAppName = showAppName;
+        s.iconCircleBg = iconCircleBg;
+        s.progressRing = progressRing;
+        s.pulseDot = pulseDot;
+        s.topHighlight = topHighlight;
+        s.bottomShadow = bottomShadow;
+        s.doubleStroke = doubleStroke;
+        s.maxTextLines = maxTextLines;
+        s.accentMode = accentMode;
+        s.enterAnim = enterAnim;
+        s.exitAnim = exitAnim;
+        s.enterDurationMs = enterDurationMs;
+        s.exitDurationMs = exitDurationMs;
+        s.enterOvershoot = enterOvershoot;
+        s.dark = copyPalette(dark);
+        s.light = copyPalette(light);
+        return s;
+    }
+
+    private static Palette copyPalette(Palette p) {
+        Palette c = new Palette();
+        c.bgColors = p.bgColors != null ? p.bgColors.clone() : null;
+        c.textPrimary = p.textPrimary;
+        c.textSecondary = p.textSecondary;
+        c.appNameColor = p.appNameColor;
+        c.accent = p.accent;
+        c.strokeColor = p.strokeColor;
+        c.highlightColor = p.highlightColor;
+        c.shadowColor = p.shadowColor;
+        c.iconBgColor = p.iconBgColor;
+        c.iconStrokeColor = p.iconStrokeColor;
+        c.ringColor = p.ringColor;
+        c.ringTrackColor = p.ringTrackColor;
+        c.pulseColor = p.pulseColor;
+        return c;
     }
 
     public JSONObject toJson() throws JSONException {

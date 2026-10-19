@@ -42,6 +42,15 @@ public final class SettingsRepository {
     public static final String ACTION_REQUEST_SETTINGS =
             "com.example.hulfix.action.REQUEST_SETTINGS";
     /**
+     * App → hook 进程：触发一次示例悬浮窗渲染。
+     *
+     * <p>用于「触发示例悬浮窗」按钮：由 App 广播，SystemUI 内的控制器收到后
+     * 直接渲染一次（不走通知链路，无冷却 / 去重 / 场景抑制），方便用户观察和
+     * 调整悬浮窗效果。每次广播 exactly 一次渲染，不影响任何其他逻辑。</p>
+     */
+    public static final String ACTION_DEMO_OVERLAY =
+            "com.example.hulfix.action.DEMO_OVERLAY";
+    /**
      * App 广播携带的全量设置 JSON（{@link Settings#toJson()}）。
      *
      * <p><b>主通道</b>：SystemUI（system_app 域）在不少 ROM 上被 SELinux 挡住，读不到
@@ -139,6 +148,24 @@ public final class SettingsRepository {
             PlatformCompat.registerReceiver(context, receiver, filter,
                     mHandler.get(), true);
             XposedBridge.log("HULFix: settings broadcast receiver registered");
+            // 示例悬浮窗触发：App 主动请求渲染一次（无冷却 / 无去重 / 无场景抑制）
+            BroadcastReceiver demoReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context ctx, Intent intent) {
+                    XposedBridge.log("HULFix: demo overlay broadcast received");
+                    mHandler.post(() -> {
+                        try {
+                            com.example.hulfix.overlay.OverlayControllerHolder.get().showDemo();
+                        } catch (Throwable t) {
+                            XposedBridge.log("HULFix: demo overlay failed: " + t);
+                        }
+                    });
+                }
+            };
+            IntentFilter demoFilter = new IntentFilter(ACTION_DEMO_OVERLAY);
+            // 同样必须 EXPORTED：来自 App 进程的跨进程广播
+            PlatformCompat.registerReceiver(context, demoReceiver, demoFilter,
+                    mHandler.get(), true);
             // SystemUI 重启后的自动同步：立刻向 App 请求一次全量设置，
             // 未收到响应前由守卫每 2s 重发（App 冷启动 / 广播丢失兜底）
             requestSettingsFromApp();
@@ -350,6 +377,7 @@ public final class SettingsRepository {
         s.enabled = p.getBoolean("hulfix_enabled", s.enabled);
         s.styleId = p.getString("hulfix_style_id", s.styleId);
         s.customStylesJson = p.getString("hulfix_custom_styles", s.customStylesJson);
+        s.styleOverridesJson = p.getString("hulfix_style_overrides", s.styleOverridesJson);
         s.themeMode = p.getInt("hulfix_theme_mode", s.themeMode);
 
         s.enterAnim = p.getInt("hulfix_enter_anim", s.enterAnim);
@@ -381,6 +409,10 @@ public final class SettingsRepository {
         s.lensDispersion = p.getFloat("hulfix_lens_dispersion", s.lensDispersion);
         s.lensSpecular = p.getFloat("hulfix_lens_specular", s.lensSpecular);
         s.lensIOR = p.getFloat("hulfix_lens_ior", s.lensIOR);
+        s.lensDynamic = p.getBoolean("hulfix_lens_dynamic", s.lensDynamic);
+        s.lensDynamicStrength = p.getFloat("hulfix_lens_dynamic_strength", s.lensDynamicStrength);
+        s.lensAdaptiveShadow = p.getFloat("hulfix_lens_adaptive_shadow", s.lensAdaptiveShadow);
+        s.lensAccentFollow = p.getBoolean("hulfix_lens_accent_follow", s.lensAccentFollow);
 
         s.autoDismissMs = p.getInt("hulfix_auto_dismiss_ms", s.autoDismissMs);
         s.showAppName = p.getBoolean("hulfix_show_app_name", s.showAppName);

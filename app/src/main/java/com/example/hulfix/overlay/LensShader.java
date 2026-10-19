@@ -17,6 +17,9 @@ package com.example.hulfix.overlay;
  *   <li>色散：R/G/B 三通道使用略微不同的折射率（±3%），边缘出现真实彩虹色散；</li>
  *   <li>菲涅尔项：掠射角处镜面反射自然增强，得到"边缘发光"；</li>
  *   <li>厚度环 + 相位呼吸微光：暗示玻璃边缘更厚的物理事实。</li>
+ *   <li><b>动态光效层</b>（实时渲染引擎逐帧驱动，见 {@link LensBackdropView}）：
+ *       方向性镜面高光（半角向量 H = normalize(L+V)，光源随交互滑动）、
+ *       自适应接触阴影（背离光源侧变暗，边缘最明显）、流动光泽（相位持续推进）。</li>
  * </ol>
  *
  * <p>SkSL 语法约束（与 GLSL 的差异已规避）：无 {@code texture2D/varying/attribute}；
@@ -43,6 +46,12 @@ public final class LensShader {
     public static final String U_PHASE = "uPhase";               // float：呼吸相位 0..2π
     public static final String U_BACKDROP = "uBackdrop";         // shader：RenderEffect 注入的背景纹理
 
+    // ---------- 动态光效 uniform（实时渲染引擎逐帧驱动） ----------
+    public static final String U_LIGHT_DIR = "uLightDir";       // float2：光源方向（屏幕空间，已归一化）
+    public static final String U_AMBIENT = "uAmbient";           // float：环境光强度 0..1
+    public static final String U_SHADOW = "uShadow";             // float：自适应阴影强度 0..1
+    public static final String U_FLOW = "uFlow";                 // float：光泽流动相位 0..2π
+
     /** 色散时 R/B 通道相对 G 通道的折射率微偏量（±3%，物理上接近真实玻璃的阿贝数下限）。 */
     public static final float DISPERSION_SPREAD = 0.03f;
 
@@ -63,6 +72,12 @@ public final class LensShader {
             + "uniform float3 " + U_HIGHLIGHT + ";\n"
             + "uniform float " + U_PHASE + ";\n"
             + "uniform shader " + U_BACKDROP + ";\n"
+            + "\n"
+            + "// ---------- 动态光效 uniform（实时渲染引擎逐帧驱动） ----------\n"
+            + "uniform float2 " + U_LIGHT_DIR + ";\n"
+            + "uniform float " + U_AMBIENT + ";\n"
+            + "uniform float " + U_SHADOW + ";\n"
+            + "uniform float " + U_FLOW + ";\n"
             + "\n"
             + "// 圆角矩形有符号距离场：内部为负、边缘为 0、外部为正（IQ 约定）\n"
             + "float sdRoundedBox(float2 p, float2 b, float r) {\n"
@@ -127,6 +142,29 @@ public final class LensShader {
             + "    // 相位呼吸微光（每条通知一个固定相位，不逐帧刷新，零常驻功耗）\n"
             + "    float breathe = 0.5 + 0.5 * sin(" + U_PHASE + ");\n"
             + "    col.rgb += " + U_SPECULAR + " * 0.06 * breathe * rim * " + U_HIGHLIGHT + ";\n"
+            + "\n"
+            + "    // ---------- 动态光效（实时渲染引擎逐帧驱动；静态层管物理，本层管活着） ----------\n"
+            + "    // 光源方向：屏幕空间 + 深度倾角，每帧由交互状态（触摸点/手势/入场进度）重算\n"
+            + "    float3 lightDir = normalize(float3(" + U_LIGHT_DIR + ".x, " + U_LIGHT_DIR + ".y, 0.6));\n"
+            + "    // 方向性镜面高光：半角向量 H = normalize(L + V)——光源滑动时高光在玻璃表面真实滑行，\n"
+            + "    // 与上方固定方向的菲涅尔附加项叠加出活玻璃质感\n"
+            + "    float3 halfV = normalize(lightDir + float3(0.0, 0.0, 1.0));\n"
+            + "    float specDir = pow(max(dot(n, halfV), 0.0), 32.0);\n"
+            + "    // 环境光越强高光越锐利，越暗越柔——模拟显示环境动态范围对高光形态的影响\n"
+            + "    col.rgb += " + U_SPECULAR + " * 0.45 * specDir * (0.4 + 0.6 * " + U_AMBIENT + ") * " + U_HIGHLIGHT + ";\n"
+            + "\n"
+            + "    // 自适应接触阴影：背离光源一侧变暗，越靠近玻璃边缘（depth→0）越明显——\n"
+            + "    // 真实光照下玻璃总在背光侧投下接触阴影，静态贴图永远摆不对这个方向。\n"
+            + "    // 光源恰在卡片正中（length≈0）时回落默认方向，防 normalize 产生 NaN\n"
+            + "    float2 ld2 = " + U_LIGHT_DIR + ";\n"
+            + "    float ldl = length(ld2);\n"
+            + "    float2 lightFlat = ldl > 0.001 ? ld2 / ldl : float2(0.35, -0.6);\n"
+            + "    float facing = dot(outward, lightFlat) * 0.5 + 0.5;\n"
+            + "    col.rgb *= 1.0 - " + U_SHADOW + " * (1.0 - facing) * (1.0 - depth) * 0.85;\n"
+            + "\n"
+            + "    // 流动光泽：随时间持续推进的对角光带（" + U_FLOW + " 由帧回调推进，交互时加速）\n"
+            + "    float flow = 0.5 + 0.5 * sin(" + U_FLOW + " + centered.x * 0.012 - centered.y * 0.020);\n"
+            + "    col.rgb += " + U_SPECULAR + " * 0.08 * flow * " + U_AMBIENT + " * " + U_HIGHLIGHT + ";\n"
             + "\n"
             + "    return col;\n"
             + "}\n";

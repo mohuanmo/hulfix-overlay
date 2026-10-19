@@ -31,6 +31,14 @@ public final class Settings {
     public String styleId = StyleIds.M3E_GLASS;
     /** JSON array of imported custom StyleSpec objects. */
     public String customStylesJson = "[]";
+    /**
+     * 逐样式微调补丁：{@code {styleId: {partial StyleSpec JSON}}}。
+     *
+     * <p>4 个内置样式是模板；用户对某样式的调整只存补丁（未出现的键保持模板原值），
+     * 由 {@code StyleRegistry.byId(id, custom, overrides)} 解析时叠加。
+     * 空对象 = 全部使用出厂模板。</p>
+     */
+    public String styleOverridesJson = "{}";
     public static final int THEME_AUTO = 0;
     public static final int THEME_LIGHT = 1;
     public static final int THEME_DARK = 2;
@@ -103,6 +111,19 @@ public final class Settings {
     public float lensSpecular = 1.0f;
     /** 折射率 IOR：1.0 = 空气（无折射），1.5 = 普通玻璃，2.0 = 钻石。 */
     public float lensIOR = 1.5f;
+
+    // ==================== 动态光效引擎（实时渲染） ====================
+    // 在静态折射层之上逐帧重算：方向性镜面高光（光源随触摸/手势滑动）、
+    // 自适应接触阴影（背离光源侧变暗）、流动光泽（相位持续推进）、
+    // 环境光适应玻璃后方内容的亮度。交互（按压/滑动/消息弹出）注入能量并衰减。
+    /** 动态光效引擎总开关（关闭 = 纯静态折射，零常驻开销）。 */
+    public boolean lensDynamic = true;
+    /** 动态强度 0..1：0 = 完全静态设计值，1 = 满额动态光效。 */
+    public float lensDynamicStrength = 1.0f;
+    /** 自适应接触阴影强度 0..1。 */
+    public float lensAdaptiveShadow = 0.35f;
+    /** 高光色跟随系统强调色（Material You 动态取色）。 */
+    public boolean lensAccentFollow = false;
 
     // ==================== 显示行为 ====================
     public int autoDismissMs = 6000;      // 原 AUTO_DISMISS_MS
@@ -225,6 +246,7 @@ public final class Settings {
             o.put("hulfix_enabled", enabled);
             o.put("hulfix_style_id", styleId);
             o.put("hulfix_custom_styles", customStylesJson);
+            o.put("hulfix_style_overrides", styleOverridesJson);
             o.put("hulfix_theme_mode", themeMode);
 
             o.put("hulfix_enter_anim", enterAnim);
@@ -256,6 +278,10 @@ public final class Settings {
             o.put("hulfix_lens_dispersion", (double) lensDispersion);
             o.put("hulfix_lens_specular", (double) lensSpecular);
             o.put("hulfix_lens_ior", (double) lensIOR);
+            o.put("hulfix_lens_dynamic", lensDynamic);
+            o.put("hulfix_lens_dynamic_strength", (double) lensDynamicStrength);
+            o.put("hulfix_lens_adaptive_shadow", (double) lensAdaptiveShadow);
+            o.put("hulfix_lens_accent_follow", lensAccentFollow);
 
             o.put("hulfix_auto_dismiss_ms", autoDismissMs);
             o.put("hulfix_show_app_name", showAppName);
@@ -323,6 +349,7 @@ public final class Settings {
         s.enabled = o.optBoolean("hulfix_enabled", s.enabled);
         s.styleId = o.optString("hulfix_style_id", s.styleId);
         s.customStylesJson = o.optString("hulfix_custom_styles", s.customStylesJson);
+        s.styleOverridesJson = o.optString("hulfix_style_overrides", s.styleOverridesJson);
         s.themeMode = o.optInt("hulfix_theme_mode", s.themeMode);
 
         s.enterAnim = o.optInt("hulfix_enter_anim", s.enterAnim);
@@ -354,6 +381,10 @@ public final class Settings {
         s.lensDispersion = (float) o.optDouble("hulfix_lens_dispersion", s.lensDispersion);
         s.lensSpecular = (float) o.optDouble("hulfix_lens_specular", s.lensSpecular);
         s.lensIOR = (float) o.optDouble("hulfix_lens_ior", s.lensIOR);
+        s.lensDynamic = o.optBoolean("hulfix_lens_dynamic", s.lensDynamic);
+        s.lensDynamicStrength = (float) o.optDouble("hulfix_lens_dynamic_strength", s.lensDynamicStrength);
+        s.lensAdaptiveShadow = (float) o.optDouble("hulfix_lens_adaptive_shadow", s.lensAdaptiveShadow);
+        s.lensAccentFollow = o.optBoolean("hulfix_lens_accent_follow", s.lensAccentFollow);
 
         s.autoDismissMs = o.optInt("hulfix_auto_dismiss_ms", s.autoDismissMs);
         s.showAppName = o.optBoolean("hulfix_show_app_name", s.showAppName);

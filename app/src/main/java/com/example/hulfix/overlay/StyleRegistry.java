@@ -3,12 +3,13 @@ package com.example.hulfix.overlay;
 import com.example.hulfix.core.Settings;
 
 import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 样式注册表：4 个内置样式 + 用户导入的自定义样式。
+ * 样式注册表：4 个内置样式模板 + 用户导入的自定义样式 + 逐样式调整层。
  *
  * <ul>
  *   <li><b>standard</b> 标准安卓：AOSP Heads-Up 观感，纯色卡片 + 轻投影，快进快出；</li>
@@ -19,6 +20,11 @@ import java.util.List;
  *   <li><b>neon_pulse</b> 霓虹脉冲（自研）：暗色玻璃 + 青色渐变描边 + 倒计时进度环 +
  *       呼吸脉冲点，一眼可见剩余停留时间。</li>
  * </ul>
+ *
+ * <p>4 个内置样式是<b>模板</b>：用户对某个样式的微调不写回模板，而是以补丁形式存放在
+ * 设置的 {@code hulfix_style_overrides}（{@code {styleId: {partial JSON}}}），
+ * 由 {@link #byId(String, String, String)} 在解析时叠加——内置模板因此保持出厂定义，
+ * 随时可一键重置调整。</p>
  */
 public final class StyleRegistry {
 
@@ -44,6 +50,47 @@ public final class StyleRegistry {
     }
 
     public static StyleSpec byId(String id, String customStylesJson) {
+        return byId(id, customStylesJson, null);
+    }
+
+    /**
+     * 解析样式：内置模板 / 导入样式 + 逐样式调整层（overrides）。
+     *
+     * <p><b>模板 + 调整层模型</b>：4 个内置样式是不可变的共享模板（谁都不许改
+     * {@link #builtins()} 返回的实例）；用户的微调存放在 {@code overridesJson}
+     * （形如 {@code {"ios_liquid": {"cornerRadiusDp": 24}}}），只对<b>对应 id</b>
+     * 的样式叠加。叠加顺序：模板 → 导入定义 → 调整补丁 → clamp。</p>
+     *
+     * <p>补丁是<b>局部</b>的：JSON 里没出现的键保持模板原值，因此用户改一个圆角
+     * 不会顺带把内置模板后续演进的其余参数冻结成旧值。</p>
+     */
+    public static StyleSpec byId(String id, String customStylesJson, String overridesJson) {
+        StyleSpec base = byIdRaw(id, customStylesJson);
+        if (base == null || overridesJson == null || overridesJson.isEmpty() || id == null) {
+            return base;
+        }
+        JSONObject patch = overridePatch(overridesJson, id);
+        if (patch == null || patch.length() == 0) return base;
+        try {
+            StyleSpec merged = base.copy().applyJson(patch);
+            StyleSpec.clamp(merged);
+            return merged;
+        } catch (JSONException ignored) {
+            return base;
+        }
+    }
+
+    /** 从 {@code {styleId: {partial spec}}} 覆盖表中取出指定样式的补丁；无则 null。 */
+    public static JSONObject overridePatch(String overridesJson, String styleId) {
+        if (overridesJson == null || overridesJson.isEmpty() || styleId == null) return null;
+        try {
+            return new JSONObject(overridesJson).optJSONObject(styleId);
+        } catch (JSONException ignored) {
+            return null;
+        }
+    }
+
+    private static StyleSpec byIdRaw(String id, String customStylesJson) {
         if (id != null && id.startsWith("custom_")) {
             for (StyleSpec s : parseCustom(customStylesJson)) {
                 if (id.equals(s.id)) return s;
